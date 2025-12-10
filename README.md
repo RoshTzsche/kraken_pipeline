@@ -156,6 +156,7 @@ Run:
 cd scripts/
 ./02_run_kraken.sh PLANTS
 ```
+> **⚠️ Important Note:** If you run the script without any arguments (e.g., just `./02_run_kraken.sh`), it will look for a default database named **`CUSTOM_DB`**. To use your specific databases (like `FISH` or `PLANTS`), you **must** provide the name as shown.
 
 Reports saved to:
 
