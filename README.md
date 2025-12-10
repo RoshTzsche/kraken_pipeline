@@ -12,7 +12,7 @@ This repository is structured to handle large datasets efficiently, keeping raw 
 - **Batch Classification:** Automatically processes all paired-end samples in the input directory.
 - **Storage Efficiency:** Generates lightweight Kraken2 reports (`_report.txt`) without storing massive, unnecessary read-by-read output files.
 - **Stacked Taxonomy Output:** Parses individual sample reports into a single, consolidated **Stacked Excel Matrix** containing Ranks, TaxIDs, and read counts for every sample.
-
+* **Space-Saving Taxonomy:** Uses a **centralized taxonomy folder** (`data/taxonomy/`). When creating new databases, the script uses **Symbolic Links** instead of duplicating the 60GB+ taxonomy files, saving massive amounts of disk space. It can even migrate existing taxonomy from old databases to the central storage.
 ---
 
 ## 📂 Repository Structure
@@ -23,9 +23,12 @@ The project uses a strict directory structure to ensure scripts run correctly.
 ```text
 kraken_pipeline/
 ├── data/
-│   ├── raw_fastq/          # PLACE YOUR INPUT FILES HERE (*_1.fastq.gz, *_2.fastq.gz)
-│   ├── fasta_ref/          # Place reference .fasta genomes here for building DB
-│   └── dbs/                # Destination for the built Kraken2 database
+│   ├── raw_fastq/          # Input FASTQ files
+│   ├── fasta_ref/          # Reference genomes (.fasta)
+│   ├── taxonomy/           # CENTRALIZED TAXONOMY (Shared by all DBs)
+│   └── dbs/                # Container for databases
+│       ├── PLANTS/         # DB 1 (Contains symlink to taxonomy)
+│       └── INSECTS/        # DB 2 (Contains symlink to taxonomy)
 │
 ├── results/
 │   ├── reports/            # Generated text reports from Kraken2
