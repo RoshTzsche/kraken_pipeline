@@ -2,19 +2,27 @@
 .DS_Store
 __pycache__/
 *.pyc
+*.pyo
 
+# --- DATOS (Ignorar contenido, mantener estructura) ---
 
-# Carpeta DATA
+# 1. Datos crudos
 data/raw_fastq/*
 !data/raw_fastq/.gitkeep
 
-data/dbs/*
-!data/dbs/.gitkeep
-
+# 2. Referencias FASTA
 data/fasta_ref/*
 !data/fasta_ref/.gitkeep
 
-# Carpeta RESULTS
+# 3. Taxonomía Central (¡CRÍTICO! Son 60GB)
+data/taxonomy/*
+!data/taxonomy/.gitkeep
+
+# 4. Bases de datos construidas
+data/dbs/*
+!data/dbs/.gitkeep
+
+# --- RESULTADOS ---
 results/reports/*
 !results/reports/.gitkeep
 
