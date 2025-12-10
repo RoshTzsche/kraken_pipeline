@@ -1,0 +1,22 @@
+# --- Archivos de sistema y Python ---
+.DS_Store
+__pycache__/
+*.pyc
+
+
+# Carpeta DATA
+data/raw_fastq/*
+!data/raw_fastq/.gitkeep
+
+data/dbs/*
+!data/dbs/.gitkeep
+
+data/fasta_ref/*
+!data/fasta_ref/.gitkeep
+
+# Carpeta RESULTS
+results/reports/*
+!results/reports/.gitkeep
+
+results/final_tables/*
+!results/final_tables/.gitkeep
