@@ -1,10 +1,3 @@
-Aquí tienes **un README final unificado, completo y coherente en inglés**, integrando **todo lo que tenían ambos documentos**, eliminando redundancias, ordenando mejor la información y manteniendo todos los detalles importantes.
-
-Listo para copiar y pegar directamente como `README.md`.
-
----
-
-```md
 # 🐙 Kraken2 Custom Metagenomics Pipeline
 
 A fully modular, automated pipeline designed to build **multiple Kraken2 custom databases**, run batch metagenomic classification, and generate **stacked taxonomic Excel reports**.  
