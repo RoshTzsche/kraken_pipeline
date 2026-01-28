@@ -10,7 +10,7 @@ This pipeline features:
 | Feature | Description |
 |--------|-------------|
 | **Zero-Duplication Taxonomy** | Only **one central taxonomy folder (~60GB)** is stored — all databases reuse it via **symlinks** |
-| **Modular FASTA References** | Each project has its own reference folder (`P`LANTS`, `INSECTS`, ...) |
+| **Modular FASTA References** | Each project has its own reference folder (`PLANTS`, `INSECTS`, ...) |
 | **Argument-Based Execution** | Every script receives the **DB name as parameter** |
 | **Batch Classification** | Automatically processes **all samples** in `raw_fastq/` |
 | **Final Excel Matrix** | Consolidates reports into a **single stacked table** |
