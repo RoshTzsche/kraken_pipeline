@@ -1,19 +1,51 @@
 # 🐙 Kraken2 Custom Metagenomics Pipeline
 
-A fully modular, automated pipeline designed to build **multiple Kraken2 custom databases**, run batch metagenomic classification, and generate **stacked taxonomic Excel reports**.  
-Ideal for projects where you need independent databases (Plants, Insects, Bacteria, Viruses, etc.) without mixing references or wasting disk space.
+A fully modular, automated pipeline designed to build **multiple Kraken2 custom databases**, run batch metagenomic classification, generate **stacked taxonomic Excel reports**, and produce **publication-ready relative abundance barplots**.
 
-This pipeline features:
+Ideal for projects where you need independent databases (Plants, Insects, Bacteria, Viruses, etc.) without mixing references or wasting disk space.
 
 ### 🔥 Key Advantages
 
 | Feature | Description |
-|--------|-------------|
+| --- | --- |
 | **Zero-Duplication Taxonomy** | Only **one central taxonomy folder (~60GB)** is stored — all databases reuse it via **symlinks** |
 | **Modular FASTA References** | Each project has its own reference folder (`PLANTS`, `INSECTS`, ...) |
 | **Argument-Based Execution** | Every script receives the **DB name as parameter** |
 | **Batch Classification** | Automatically processes **all samples** in `raw_fastq/` |
 | **Final Excel Matrix** | Consolidates reports into a **single stacked table** |
+| **Automated Visualization** | Generates threshold-filtered, stacked relative abundance barplots (PDF), with options for metadata grouping |
+
+---
+
+## 🗺️ Workflow Diagram
+
+```mermaid
+graph TD
+    %% Styling
+    classDef script fill:#2a9d8f,stroke:#264653,stroke-width:2px,color:#fff;
+    classDef input fill:#e9c46a,stroke:#e76f51,stroke-width:2px,color:#000;
+    classDef output fill:#f4a261,stroke:#e76f51,stroke-width:2px,color:#000;
+    classDef database fill:#264653,stroke:#2a9d8f,stroke-width:2px,color:#fff;
+
+    %% Nodes
+    F1[FASTA References]:::input --> S1(01_build_db.sh):::script
+    S1 -->|Symlinks| DB1[(Central Taxonomy)]:::database
+    S1 --> DB2[(Custom Kraken2 DB)]:::database
+    
+    F2[Raw FastQ Files]:::input --> S2(02_run_kraken.sh):::script
+    DB2 --> S2
+    
+    S2 --> O1[Kraken2 Reports]:::output
+    O1 --> S3(03_generate_table.py):::script
+    
+    S3 --> O2[Stacked Excel Matrix]:::output
+    
+    O2 --> S4(04_generateBarplots.py):::script
+    M[Metadata CSV/Excel]:::input -.->|Optional| S4
+    
+    S4 --> O3[Relative Abundance Barplots PDF]:::output
+
+```
 
 ---
 
@@ -23,41 +55,25 @@ This pipeline features:
 
 Each database reads only from its own reference folder:
 
-```
-
+```text
 data/fasta_ref/PLANTS/   → Genomes for PLANTS DB
 data/fasta_ref/INSECTS/ → Genomes for INSECTS DB
 
-````
+```
 
 No cross-contamination — perfect for multiple independent projects.
 
----
-
 ### 2. The "Zero-Duplication" Taxonomy Strategy
 
-Standard Kraken2 DBs store local `taxonomy/` copies (~60GB per DB).  
+Standard Kraken2 DBs store local `taxonomy/` copies (~60GB per DB).
+
 Building 5 DBs = **300GB+ wasted space**.
 
-#### Our solution:
+**Our solution:**
 
-- **📦 Centralized storage**: one `data/taxonomy/` directory shared by all DBs
-- **🔗 Symlink-based linking**: each DB folder contains only a link to the master taxonomy
-- **💾 <1KB storage per DB**
-- **⬆ Auto-migration tool**: detects old taxonomy and offers to relocate & link automatically
-
----
-
-### 3. Parametric Execution
-
-Run scripts by specifying the database name:
-
-```bash
-./01_build_db.sh PLANTS
-./01_build_db.sh INSECTS   # Reuses same taxonomy automatically
-````
-
-No code editing. No duplicated folders.
+* **📦 Centralized storage**: one `data/taxonomy/` directory shared by all DBs
+* **🔗 Symlink-based linking**: each DB folder contains only a link to the master taxonomy
+* **💾 <1KB storage per DB**
 
 ---
 
@@ -67,9 +83,9 @@ No code editing. No duplicated folders.
 * 🧬 Modular **FASTA reference input**
 * 🧠 **Central taxonomy with symlink reuse**
 * 📊 **Stacked Excel output table**
+* 📈 **Automated Barplot Generation** (Individual & Metadata-grouped)
 * 🌀 **Batch paired-end processing**
 * 🧽 Automatic filename cleaning for sample names
-* 🧱 Scales easily to 10+ DBs without size explosion
 
 ---
 
@@ -81,26 +97,22 @@ kraken_pipeline/
 │   ├── raw_fastq/             # Paired-end reads: *_1.fastq.gz & *_2.fastq.gz
 │   ├── taxonomy/              # MASTER NCBI TAXONOMY (shared via symlinks)
 │   ├── fasta_ref/             # Reference genomes grouped by DB name
-│   │   ├── PLANTS/
-│   │   └── INSECTS/
 │   └── dbs/                   # Built Kraken2 databases
-│       ├── PLANTS/            # Contains symlink → ../taxonomy/
-│       └── INSECTS/
 │
 ├── results/
 │   ├── reports/               # Kraken2 report outputs
-│   │   ├── PLANTS/
-│   │   └── INSECTS/
 │   └── final_tables/          # Excel summary files
 │
 ├── scripts/
 │   ├── 01_build_db.sh         # Builds DB from fasta_ref/<DB_NAME>
 │   ├── 02_run_kraken.sh       # Classifies all samples
-│   └── 03_generate_table.py   # Creates stacked Excel taxonomic matrix
+│   ├── 03_generate_table.py   # Creates stacked Excel taxonomic matrix
+│   └── 04_generateBarplots.py # Generates relative abundance PDF barplots
 │
 ├── requirements.txt
 ├── LICENSE
 └── README.md
+
 ```
 
 ---
@@ -114,6 +126,7 @@ Create reference folder and add any number of `.fasta` genomes:
 ```bash
 mkdir -p data/fasta_ref/PLANTS
 cp genomes/*.fasta data/fasta_ref/PLANTS/
+
 ```
 
 Build DB:
@@ -121,115 +134,81 @@ Build DB:
 ```bash
 cd scripts/
 ./01_build_db.sh PLANTS
+
 ```
-
-Script will:
-
-1. Check for taxonomy
-2. Download or migrate if needed
-3. Create symlink into `dbs/PLANTS`
-4. Build Kraken2 DB
-
----
 
 ### **Phase 2 — Classification**
 
 Place reads inside `data/raw_fastq/`:
 
-Naming required:
-
-```
-sampleA_1.fastq.gz
-sampleA_2.fastq.gz
-```
-
-Run:
-
 ```bash
 cd scripts/
 ./02_run_kraken.sh PLANTS
-```
-> **⚠️ Important Note:** If you run the script without any arguments (e.g., just `./02_run_kraken.sh`), it will look for a default database named **`CUSTOM_DB`**. To use your specific databases (like `FISH` or `PLANTS`), you **must** provide the name as shown.
-
-Reports saved to:
 
 ```
-results/reports/PLANTS/
-```
 
----
+> **⚠️ Important Note:** If you run the script without any arguments, it will look for a default database named **`CUSTOM_DB`**.
 
 ### **Phase 3 — Reporting**
 
 ```bash
 cd scripts/
 python3 03_generate_table.py PLANTS
-```
-
-Output:
 
 ```
-results/final_tables/PLANTS_Taxonomy_Stacked.xlsx
+
+### **Phase 4 — Visualization (Barplots)**
+
+Generate high-quality, normalized relative abundance barplots (PDF) from your generated tables.
+
+**Example Execution:** Generate a `species`-level barplot grouped by `Sex` with a 1.5% (`0.015`) abundance threshold:
+
+```bash
+cd scripts/
+python barplots3.py -d ../results/final_tables/Taxonomy_FISH_Cumulative_Reads.xlsx -m "../data/Metadata_Inferred.xlsx" -c Sex -r species -t 0.015 -org Fish
 ```
 
-Example structure:
+#### 📊 Example Output
 
-| Rank   | TaxID | Name       | Sample_A | Sample_B | Sample_C |
-| ------ | ----- | ---------- | -------- | -------- | -------- |
-| Phylum | 1234  | Arthropoda | 1200     | 500      | —        |
-| Class  | 5678  | Insecta    | 800      | 300      | 50       |
-
+*(The resulting PDF is exported directly with normalized abundance and square legend markers)*
+![./img/graph.png](Example)
 ---
 
 ## 🛠 Requirements
 
-### System
-
 ```bash
+# System
 conda install -c bioconda kraken2
-# or
-sudo apt install kraken2
-```
 
-### Python
-
-```bash
+# Python
 pip install -r requirements.txt
-# includes pandas + openpyxl
+
 ```
 
 ---
 
-## ⚙ Configuration (Optional)
+## 📝 Citation
 
-Inside scripts you can edit:
+If you use this pipeline in your research, please cite it as follows:
 
-```bash
-THREADS=12
-DB_PATH="../data/dbs/PLANTS"
-INPUT_DIR="../data/raw_fastq"
+**APA Format:**
+
+> RoshTzsche. (2026). *Kraken2 Custom Metagenomics Pipeline*. GitHub. [https://github.com/RoshTzsche/kraken_pipeline](https://www.google.com/url?sa=E&source=gmail&q=https://github.com/RoshTzsche/kraken_pipeline)
+
+**BibTeX:**
+
+```bibtex
+@software{RoshTzsche_kraken_pipeline_2026,
+  author = {RoshTzsche},
+  title = {Kraken2 Custom Metagenomics Pipeline},
+  year = {2026},
+  publisher = {GitHub},
+  journal = {GitHub repository},
+  howpublished = {\url{https://github.com/RoshTzsche/kraken_pipeline}}
+}
+
 ```
 
----
-
-## 📝 License
+## 📜 License
 
 MIT — Free for commercial & academic use.
-
----
-
-### If you want I can also generate:
-
-✔ badges
-✔ usage GIFs
-✔ example workflow diagram
-✔ citation template for publications
-
-Just ask. 🚀
-
-```
-
----
-
-Si deseas, puedo generar versión **más corta**, **con iconografía visual**, o un **README premium estilo profesional GitHub con banners**.
-```
