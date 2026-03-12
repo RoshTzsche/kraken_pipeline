@@ -171,7 +171,9 @@ python barplots3.py -d ../results/final_tables/Taxonomy_FISH_Cumulative_Reads.xl
 #### 📊 Example Output
 
 *(The resulting PDF is exported directly with normalized abundance and square legend markers)*
-![./img/graph.png](Example)
+
+![Example](./img/graph.png)
+
 ---
 
 ## 🛠 Requirements
