@@ -165,7 +165,7 @@ Generate high-quality, normalized relative abundance barplots (PDF) from your ge
 
 ```bash
 cd scripts/
-python barplots3.py -d ../results/final_tables/Taxonomy_FISH_Cumulative_Reads.xlsx -m "../data/Metadata_Inferred.xlsx" -c Sex -r species -t 0.015 -org Fish
+python 04_generate_Barplots.py -d ../results/final_tables/Taxonomy_FISH_Cumulative_Reads.xlsx -m "../data/Metadata_Inferred.xlsx" -c Sex -r species -t 0.015 -org Fish
 ```
 
 #### 📊 Example Output
