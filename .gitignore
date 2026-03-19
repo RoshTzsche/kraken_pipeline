@@ -28,3 +28,6 @@ results/reports/*
 
 results/final_tables/*
 !results/final_tables/.gitkeep
+*.xlsx
+*.pdf
+
