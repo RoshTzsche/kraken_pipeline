@@ -86,7 +86,8 @@ Building 5 DBs = **300GB+ wasted space**.
 * 📈 **Automated Barplot Generation** (Individual & Metadata-grouped)
 * 🌀 **Batch paired-end processing**
 * 🧽 Automatic filename cleaning for sample names
-
+* **Statistical Confidence Ellipses:** Automatically computes and plots 95% confidence ellipses for PCoA groups ($n \ge 3$) using bivariate Gaussian distribution modeling.
+* **Continuous Data Binning:** If a continuous numerical variable (like `pH` or `ORP`) is passed for PCoA grouping, the script automatically applies Quantile Binning (`pandas.qcut`), partitioning the gradient into 4 equal-sized probability intervals to ensure valid ellipse geometry.
 ---
 
 ## 📂 Repository Structure
@@ -168,12 +169,16 @@ cd scripts/
 python 04_generate_Barplots.py -d ../results/final_tables/Taxonomy_FISH_Cumulative_Reads.xlsx -m "../data/Metadata_Inferred.xlsx" -c Sex -r species -t 0.015 -org Fish
 ```
 
-#### 📊 Example Output
+**PCoA with Categorical Metadata (e.g., Sex) and Confidence Ellipses**
+```bash
+python 05_generate_PCoA_PieChart.py -d taxonomic_classification_clean.xlsx -mode pcoa -r genus -m Metadata_Cleaned.csv -c Sex
+```
 
-*(The resulting PDF is exported directly with normalized abundance and square legend markers)*
-
+#### 📊 Example outputs
+#### Barplots 
 ![Example](./img/graph.png)
-
+#### PCoA
+![PCoA Example](rsc/pcoa.png)
 ---
 
 ## 🛠 Requirements
