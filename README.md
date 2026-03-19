@@ -178,7 +178,7 @@ python 05_generate_PCoA_PieChart.py -d taxonomic_classification_clean.xlsx -mode
 #### Barplots 
 ![Example](./img/graph.png)
 #### PCoA
-![PCoA Example](rsc/pcoa.png)
+![PCoA Example](./img/pcoa.png)
 ---
 
 ## 🛠 Requirements
