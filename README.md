@@ -159,7 +159,22 @@ python3 03_generate_table.py PLANTS
 ```
 
 ### **Phase 4 — Visualization (Barplots)**
+#### 📋 Metadata Formatting Guide
+To guarantee a perfect mathematical mapping (bijection) between your abundance matrices and your metadata for PCoA plots, your metadata file (`.csv` or `.xlsx`) must follow a strict tabular structure.
 
+**Formatting Rules:**
+* **The ID Column:** This column (default: `SampleID`) must contain identifiers that match the *prefix* of your abundance matrix columns. The script automatically isolates the base name before any technical underscores. For example, if your abundance sample is named `Nlf4_L6_2`, your metadata ID must simply be `Nlf4`.
+* **Categorical Data:** Text-based columns (e.g., `Sex`, `Treatment`) will be automatically grouped by their unique string values.
+* **Continuous Data:** Numerical columns (e.g., `ORP`, `pH`) must contain **only pure numbers** (do not include text units like "mV" or symbols). This allows the script to correctly cast them as floats and trigger the automated quantile binning.
+
+**Example Structure (`Metadata_Cleaned.csv`):**
+
+| SampleID | Sex    | ORP    | pH   |
+|----------|--------|--------|------|
+| Nlf1     | Male   | 145.50 | 7.4  |
+| Nlf2     | Female | 162.60 | 7.6  |
+| Nlf3     | Male   | 132.00 | 7.3  |
+| Nlf4     | Female | 155.50 | 7.5  |
 Generate high-quality, normalized relative abundance barplots (PDF) from your generated tables.
 
 **Example Execution:** Generate a `species`-level barplot grouped by `Sex` with a 1.5% (`0.015`) abundance threshold:
