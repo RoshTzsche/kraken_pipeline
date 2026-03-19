@@ -175,7 +175,8 @@ To guarantee a perfect mathematical mapping (bijection) between your abundance m
 | Nlf2     | Female | 162.60 | 7.6  |
 | Nlf3     | Male   | 132.00 | 7.3  |
 | Nlf4     | Female | 155.50 | 7.5  |
-Generate high-quality, normalized relative abundance barplots (PDF) from your generated tables.
+
+Generate normalized relative abundance barplots (PDF)
 
 **Example Execution:** Generate a `species`-level barplot grouped by `Sex` with a 1.5% (`0.015`) abundance threshold:
 
