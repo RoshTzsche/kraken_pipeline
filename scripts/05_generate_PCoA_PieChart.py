@@ -192,7 +192,7 @@ def generate_pcoa_plot(df_rank, rank_level, metadata_path, category_col, sample_
     
     ax.set_xlabel(f"PC1 ({pc1_var:.1f}%)", fontsize=14, fontweight='bold', color='#333333')
     ax.set_ylabel(f"PC2 ({pc2_var:.1f}%)", fontsize=14, fontweight='bold', color='#333333')
-    ax.set_title(f"PCoA (Bray-Curtis Manifold) - {rank_level.capitalize()}", fontsize=18, fontweight='heavy', pad=20, color='#1a1a1a')
+    ax.set_title(f"PCoA (Bray-Curtis) - {rank_level.capitalize()}", fontsize=16, fontweight='heavy', pad=20, color='#1a1a1a')
     
     for spine in ax.spines.values():
         spine.set_visible(False)
@@ -243,4 +243,4 @@ if __name__ == "__main__":
         if args.metadata and args.category:
             generate_pcoa_plot(df_rank, args.rank, args.metadata, args.category, args.sample_id, f"{output_base}_PCoA", args.format.lower())
         else:
-            print("[!] WARNING: PCoA manifold computation requires valid metadata and categorical vectors. Aborting sub-routine.")
+            print("[!] WARNING: PCoA computation requires valid metadata and categorical vectors. Aborting sub-routine.")
