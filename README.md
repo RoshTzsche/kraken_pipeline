@@ -195,7 +195,7 @@ python 04_generate_Barplots.py \
   -t 0.015 \
   -org Fish \
   -fmt tiff
-
+```
 2. Principal Coordinate Analysis (PCoA) & Global Pie Charts
 
 New Feature: The --mode argument allows for strict algorithmic routing, saving computational cycles by bypassing unneeded analyses.
@@ -207,7 +207,7 @@ New Feature: The --mode argument allows for strict algorithmic routing, saving c
     --mode both: Executes the complete analytical pipeline (Default).
 
 Example A: Isolated PCoA with Categorical Metadata (e.g., Sex) and Confidence Ellipses (TIFF Output)
-Bash
+```Bash
 
 python 05_generate_PCoA_PieChart.py \
   -d ../results/final_tables/taxonomic_classification_clean.xlsx \
@@ -217,9 +217,9 @@ python 05_generate_PCoA_PieChart.py \
   -id SampleID \
   --mode pcoa \
   -fmt tiff
-
+```
 Example B: Global Pie Chart Generation without Metadata (PNG Output)
-Bash
+```Bash
 
 python 05_generate_PCoA_PieChart.py \
   -d ../results/final_tables/taxonomic_classification_clean.xlsx \
@@ -227,9 +227,9 @@ python 05_generate_PCoA_PieChart.py \
   -t 0.05 \
   --mode pie \
   -fmt png
-
+```
 Example C: Full Analytical Suite (Default PDF Output)
-Bash
+```Bash
 
 python 05_generate_PCoA_PieChart.py \
   -d ../results/final_tables/taxonomic_classification_clean.xlsx \
@@ -239,6 +239,7 @@ python 05_generate_PCoA_PieChart.py \
   -id SampleID \
   --mode both \
   -fmt pdf
+  ```
 #### Example outputs
 #### Barplots 
 ![Example](./img/graph.png)
