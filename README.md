@@ -1,10 +1,10 @@
-# 🐙 Kraken2 Custom Metagenomics Pipeline
+# Kraken2 Custom Metagenomics Pipeline
 
 A fully modular, automated pipeline designed to build **multiple Kraken2 custom databases**, run batch metagenomic classification, generate **stacked taxonomic Excel reports**, and produce **publication-ready relative abundance barplots**.
 
 Ideal for projects where you need independent databases (Plants, Insects, Bacteria, Viruses, etc.) without mixing references or wasting disk space.
 
-### 🔥 Key Advantages
+### Key Advantages
 
 | Feature | Description |
 | --- | --- |
@@ -17,7 +17,7 @@ Ideal for projects where you need independent databases (Plants, Insects, Bacter
 
 ---
 
-## 🗺️ Workflow Diagram
+## Workflow Diagram
 
 ```mermaid
 graph TD
@@ -49,7 +49,7 @@ graph TD
 
 ---
 
-## 🧠 Architecture Overview
+## Architecture Overview
 
 ### 1. Modular FASTA Reference System
 
@@ -71,26 +71,26 @@ Building 5 DBs = **300GB+ wasted space**.
 
 **Our solution:**
 
-* **📦 Centralized storage**: one `data/taxonomy/` directory shared by all DBs
-* **🔗 Symlink-based linking**: each DB folder contains only a link to the master taxonomy
-* **💾 <1KB storage per DB**
+* ** Centralized storage**: one `data/taxonomy/` directory shared by all DBs
+* ** Symlink-based linking**: each DB folder contains only a link to the master taxonomy
+* ** <1KB storage per DB**
 
 ---
 
-## 🚀 Features
+##  Features
 
-* 🔧 **Custom DB Builder**
-* 🧬 Modular **FASTA reference input**
-* 🧠 **Central taxonomy with symlink reuse**
-* 📊 **Stacked Excel output table**
-* 📈 **Automated Barplot Generation** (Individual & Metadata-grouped)
-* 🌀 **Batch paired-end processing**
-* 🧽 Automatic filename cleaning for sample names
+*  **Custom DB Builder**
+*  Modular **FASTA reference input**
+*  **Central taxonomy with symlink reuse**
+*  **Stacked Excel output table**
+*  **Automated Barplot Generation** (Individual & Metadata-grouped)
+*  **Batch paired-end processing**
+*  Automatic filename cleaning for sample names
 * **Statistical Confidence Ellipses:** Automatically computes and plots 95% confidence ellipses for PCoA groups ($n \ge 3$) using bivariate Gaussian distribution modeling.
 * **Continuous Data Binning:** If a continuous numerical variable (like `pH` or `ORP`) is passed for PCoA grouping, the script automatically applies Quantile Binning (`pandas.qcut`), partitioning the gradient into 4 equal-sized probability intervals to ensure valid ellipse geometry.
 ---
 
-## 📂 Repository Structure
+## Repository Structure
 
 ```text
 kraken_pipeline/
@@ -118,7 +118,7 @@ kraken_pipeline/
 
 ---
 
-## 📖 Usage Guide
+## Usage Guide
 
 ### **Phase 1 — Build a Database**
 
@@ -159,7 +159,7 @@ python3 03_generate_table.py PLANTS
 ```
 
 ### **Phase 4 — Visualization (Barplots)**
-#### 📋 Metadata Formatting Guide
+#### Metadata Formatting Guide
 To guarantee a perfect mathematical mapping (bijection) between your abundance matrices and your metadata for PCoA plots, your metadata file (`.csv` or `.xlsx`) must follow a strict tabular structure.
 
 **Formatting Rules:**
@@ -177,27 +177,76 @@ To guarantee a perfect mathematical mapping (bijection) between your abundance m
 | Nlf4     | Female | 155.50 | 7.5  |
 
 Generate normalized relative abundance barplots (PDF)
+## Execution Examples
 
-**Example Execution:** Generate a `species`-level barplot grouped by `Sex` with a 1.5% (`0.015`) abundance threshold:
+### 1. Relative Abundance Barplots
+Generate a threshold-filtered, stacked relative abundance barplot. 
+**New Feature:** You can now explicitly define the output projection format using the `-fmt` argument (supports `pdf`, `png`, `tiff`). Raster images (`png`, `tiff`) are automatically rendered at a clinical-grade 300 DPI.
+
+**Example Execution:** Generate a `species`-level barplot grouped by `Sex` with a 1.5% (`0.015`) abundance threshold, outputting as a high-resolution TIFF:
 
 ```bash
 cd scripts/
-python 04_generate_Barplots.py -d ../results/final_tables/Taxonomy_FISH_Cumulative_Reads.xlsx -m "../data/Metadata_Inferred.xlsx" -c Sex -r species -t 0.015 -org Fish
-```
+python 04_generate_Barplots.py \
+  -d ../results/final_tables/Taxonomy_FISH_Cumulative_Reads.xlsx \
+  -m "../data/Metadata_Inferred.xlsx" \
+  -c Sex \
+  -r species \
+  -t 0.015 \
+  -org Fish \
+  -fmt tiff
 
-**PCoA with Categorical Metadata (e.g., Sex) and Confidence Ellipses**
-```bash
-python 05_generate_PCoA_PieChart.py -d taxonomic_classification_clean.xlsx -mode pcoa -r genus -m Metadata_Cleaned.csv -c Sex
-```
+2. Principal Coordinate Analysis (PCoA) & Global Pie Charts
 
-#### 📊 Example outputs
+New Feature: The --mode argument allows for strict algorithmic routing, saving computational cycles by bypassing unneeded analyses.
+
+    --mode pcoa: Computes only the Bray-Curtis dissimilarity matrix and confidence ellipses.
+
+    --mode pie: Computes only the global scalar probability simplex (Pie Chart).
+
+    --mode both: Executes the complete analytical pipeline (Default).
+
+Example A: Isolated PCoA with Categorical Metadata (e.g., Sex) and Confidence Ellipses (TIFF Output)
+Bash
+
+python 05_generate_PCoA_PieChart.py \
+  -d ../results/final_tables/taxonomic_classification_clean.xlsx \
+  -r genus \
+  -m "../data/Metadata_Inferred.xlsx" \
+  -c Sex \
+  -id SampleID \
+  --mode pcoa \
+  -fmt tiff
+
+Example B: Global Pie Chart Generation without Metadata (PNG Output)
+Bash
+
+python 05_generate_PCoA_PieChart.py \
+  -d ../results/final_tables/taxonomic_classification_clean.xlsx \
+  -r phylum \
+  -t 0.05 \
+  --mode pie \
+  -fmt png
+
+Example C: Full Analytical Suite (Default PDF Output)
+Bash
+
+python 05_generate_PCoA_PieChart.py \
+  -d ../results/final_tables/taxonomic_classification_clean.xlsx \
+  -r family \
+  -m "../data/Metadata_Inferred.xlsx" \
+  -c Disease_State \
+  -id SampleID \
+  --mode both \
+  -fmt pdf
+#### Example outputs
 #### Barplots 
 ![Example](./img/graph.png)
 #### PCoA
 ![PCoA Example](./img/pcoa.png)
 ---
 
-## 🛠 Requirements
+## Requirements
 
 ```bash
 # System
@@ -210,7 +259,7 @@ pip install -r requirements.txt
 
 ---
 
-## 📝 Citation
+##  Citation
 
 If you use this pipeline in your research, please cite it as follows:
 
