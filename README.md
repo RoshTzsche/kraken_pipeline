@@ -196,7 +196,7 @@ python 04_generate_Barplots.py \
   -org Fish \
   -fmt tiff
 ```
-2. Principal Coordinate Analysis (PCoA) & Global Pie Charts
+### 2. Principal Coordinate Analysis (PCoA) & Global Pie Charts
 
 New Feature: The --mode argument allows for strict algorithmic routing, saving computational cycles by bypassing unneeded analyses.
 
@@ -239,7 +239,26 @@ python 05_generate_PCoA_PieChart.py \
   -id SampleID \
   --mode both \
   -fmt pdf
-  ```
+'''
+### 3. Statistical Violin Plots (ANOVA & Tukey HSD)
+**New Feature:** This module reads physicochemical metadata, performs one-way ANOVA, automatically computes the **Tukey HSD Compact Letter Display (CLD)** for significance matching, and plots classic-themed Violin plots with error bars representing the standard error.
+
+**Example A: Plotting specific variables (TIFF output)**
+```bash
+python 06_generate_Violin_ANOVA.py \
+  -i "../data/Metadata_Cleaned.csv" \
+  -c Month \
+  -v "DO,pH,Turbidity,ORP" \
+  -fmt tiff
+
+Example B: Auto-plotting all numeric variables (Default PDF output)
+Bash
+
+python 06_generate_Violin_ANOVA.py \
+  -i "../data/Metadata_Cleaned.csv" \
+  -c Treatment_Group \
+  -v all \
+  -o All_Parameters_Statistics ```
 #### Example outputs
 #### Barplots 
 ![Example](./img/graph.png)

@@ -10,6 +10,8 @@ import matplotlib.transforms as transforms
 import scipy.stats as stats
 
 COLORS = [
+        "#4E79A7", "#F28E2B", "#E15759", "#76B7B2", "#59A14F", 
+    "#EDC948", "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC",
         "#b988d5", "#cbd588", "#88a05b", "#ffe156", "#6b8ba4", "#fda47d", 
         "#8e5634", "#d44645", "#5d9ca3", "#63b7af", "#dcd3ff", "#ff94cc", 
         "#ffa45b", "#806d40", "#2a363b", "#99b898", "#feceab", "#ff847c", 
@@ -125,7 +127,7 @@ def generate_pcoa_plot(df_rank, rank_level, metadata_path, category_col, sample_
     n = dist_matrix.shape[0]
     J = np.eye(n) - np.ones((n, n)) / n  
     B = -0.5 * J.dot(dist_matrix ** 2).dot(J)  
-    
+        
     # Eigendecomposition
     eigenvalues, eigenvectors = np.linalg.eigh(B)
     idx = np.argsort(eigenvalues)[::-1]
@@ -192,7 +194,7 @@ def generate_pcoa_plot(df_rank, rank_level, metadata_path, category_col, sample_
     
     ax.set_xlabel(f"PC1 ({pc1_var:.1f}%)", fontsize=14, fontweight='bold', color='#333333')
     ax.set_ylabel(f"PC2 ({pc2_var:.1f}%)", fontsize=14, fontweight='bold', color='#333333')
-    ax.set_title(f"PCoA (Bray-Curtis) - {rank_level.capitalize()}", fontsize=16, fontweight='heavy', pad=20, color='#1a1a1a')
+    #ax.set_title(f"PCoA (Bray-Curtis) - {rank_level.capitalize()}", fontsize=16, fontweight='heavy', pad=20, color='#1a1a1a')
     
     for spine in ax.spines.values():
         spine.set_visible(False)

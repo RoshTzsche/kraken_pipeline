@@ -8,3 +8,7 @@ matplotlib>=3.7.0
 # API Requests and Database Downloading (00_download_ncbi.py)
 requests>=2.31.0
 
+# Statistical analysis and advanced plotting (06_generate_Violin_ANOVA.py)
+seaborn>=0.12.0
+statsmodels>=0.14.0
+scipy>=1.10.0
