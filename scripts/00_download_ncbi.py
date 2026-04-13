@@ -7,8 +7,8 @@ from requests.exceptions import ChunkedEncodingError, ConnectionError, ReadTimeo
 
 # ================= CONFIGURATION =================
 BOLD_BASE_URL = "https://v4.boldsystems.org/index.php/API_Public/sequence"
-NCBI_API_KEY = "f8ffdbb3a603606188fe140fb934f68d8b08"  # User API Key
-EMAIL = "roshguadiana@gmail.com" 
+NCBI_API_KEY = ""  # User API Key
+EMAIL = "@gmail.com" #your bold mail  
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36"
