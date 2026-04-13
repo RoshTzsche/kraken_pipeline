@@ -1,4 +1,5 @@
 import argparse
+import os
 import pandas as pd
 import numpy as np
 import matplotlib
@@ -403,10 +404,15 @@ if __name__ == "__main__":
     parser.add_argument("-fmt", "--format",    choices=["pdf", "png", "tiff"],
                         default="pdf", help="Output format.")
 
-    args        = parser.parse_args()
+    args = parser.parse_args()
+
+    OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'results', 'Violin_ANOVA')
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
     safe_name   = args.organism.replace(" ", "_")
-    output_base = (args.output if args.output
+    base_name   = (args.output if args.output
                    else f"{safe_name}_{args.rank}_{args.threshold}_Violin_ANOVA")
+    output_base = os.path.join(OUTPUT_DIR, base_name)
 
     generate_taxa_violin_plots(
         data_path     = args.data,

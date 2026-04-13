@@ -19,7 +19,7 @@ def export_topological_projection(fig, output_base, fmt, pad_inches=1.0):
     else:
         raise ValueError(f"Unsupported topological projection format: {fmt}")
 
-def generate_individual_microbiome_plot(data_path, rank_level='family', threshold=0.01, organism_name='Microbiome', output_base='microbiome_report', fmt='pdf'):
+def generate_individual_microbiome_plot(data_path, rank_level='family', threshold=0.01, organism_name='Microbiome', output_base='microbiome_report', fmt='pdf', sample_order=None):
     """
     Generates a stacked bar chart of the relative abundance.
     Margins and 'Others' category are removed. Scaled precisely to 100%.
@@ -51,6 +51,14 @@ def generate_individual_microbiome_plot(data_path, rank_level='family', threshol
     df_kept_normalized = df_kept.div(df_kept.sum(axis=0), axis=1) * 100
     df_plot = df_kept_normalized.T
     
+    # --- CUSTOM INDEX REORDERING ---
+    if sample_order:
+        # Keep only the requested items that exist in our dataframe
+        valid_order = [item for item in sample_order if item in df_plot.index]
+        # Append any that are in the dataframe but were missed in the custom order
+        missing = [item for item in df_plot.index if item not in valid_order]
+        df_plot = df_plot.loc[valid_order + missing]
+    
     colors = [
         "#b988d5", "#cbd588", "#88a05b", "#ffe156", "#6b8ba4", "#fda47d", 
         "#8e5634", "#d44645", "#5d9ca3", "#63b7af", "#dcd3ff", "#ff94cc", 
@@ -77,11 +85,14 @@ def generate_individual_microbiome_plot(data_path, rank_level='family', threshol
     
     plt.xticks(rotation=45, ha='right', fontsize=9)
     
+    # Determine if legend items should be italicized based on biological taxonomy rank rules
+    font_style = 'italic' if rank_level.lower() in ['genus', 'species'] else 'normal'
+    
     # Updated Legend
     plt.legend(title=rank_level.capitalize(), 
                bbox_to_anchor=(1.02, 1), 
                loc='upper left', 
-               fontsize=11, 
+               prop={'style': font_style, 'size': 11},
                title_fontproperties={'weight': 'bold', 'size': 11},
                borderaxespad=0.,
                frameon=False,
@@ -95,9 +106,10 @@ def generate_individual_microbiome_plot(data_path, rank_level='family', threshol
     plt.close(fig)
 
 
-def generate_grouped_microbiome_plots(data_path, metadata_path, category_col, sample_id_col='SampleID', rank_level='family', threshold=0.01, organism_name='Microbiome', output_base='output', fmt='pdf'):
+def generate_grouped_microbiome_plots(data_path, metadata_path, category_col, sample_id_col='SampleID', rank_level='family', threshold=0.01, organism_name='Microbiome', output_base='output', fmt='pdf', category_order=None):
     """
     Groups absolute counts by a metadata category before calculating relative abundance.
+    Includes an optional custom categorical order mapping.
     """
     df = pd.read_excel(data_path, sheet_name=0)
     
@@ -139,6 +151,14 @@ def generate_grouped_microbiome_plots(data_path, metadata_path, category_col, sa
     df_kept_normalized = df_kept.div(df_kept.sum(axis=0), axis=1) * 100
     df_plot = df_kept_normalized.T
     
+    # --- CUSTOM INDEX REORDERING ---
+    if category_order:
+        # Keep only the requested items that exist in our dataframe
+        valid_order = [cat for cat in category_order if cat in df_plot.index]
+        # Append any that are in the dataframe but were missed in the custom order
+        missing = [cat for cat in df_plot.index if cat not in valid_order]
+        df_plot = df_plot.loc[valid_order + missing]
+    
     colors = [ 
         "#b988d5", "#cbd588", "#88a05b", "#ffe156", "#6b8ba4",
         "#fda47d", "#8e5634", "#d44645", "#5d9ca3", "#63b7af",
@@ -176,10 +196,13 @@ def generate_grouped_microbiome_plots(data_path, metadata_path, category_col, sa
     plt.xlabel(f'{category_col}', fontsize=17, fontweight='bold')
     plt.xticks(rotation=0, ha='center', fontsize=14)
     
+    # Determine if legend items should be italicized based on biological taxonomy rank rules
+    font_style = 'italic' if rank_level.lower() in ['genus', 'species'] else 'normal'
+
     plt.legend(title=rank_level.capitalize(), 
                bbox_to_anchor=(1., .80), 
                loc='upper left', 
-               prop={'style': 'italic', 'size': 12},
+               prop={'style': font_style, 'size': 12},
                title_fontproperties={'weight': 'bold', 'size': 15}, 
                borderaxespad=0.,
                frameon=False,
@@ -202,14 +225,21 @@ if __name__ == "__main__":
     parser.add_argument('-m', '--metadata', type=str, help='Path to metadata CSV file for grouping.')
     parser.add_argument('-c', '--category', type=str, help='Metadata column to group by.')
     parser.add_argument('-id', '--sample_id', type=str, default='SampleID', help='Metadata column name for sample IDs.')
-    
     parser.add_argument('-fmt', '--format', type=str, choices=['pdf', 'png', 'tiff'], default='pdf', 
                         help='Topological projection format: pdf (continuous vector), png/tiff (discrete raster at 300 DPI).')
+    
+    # NEW ARGUMENT: Added a way to pass a custom order via command line
+    parser.add_argument('-ord', '--order', type=str, nargs='+', 
+                        help='Custom order for x-axis categories separated by spaces (e.g., "1 month" "1 week" "0 days").')
 
     args = parser.parse_args()
     
+    OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'results', 'Barplots')
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
     safe_org_name = args.organism.replace(" ", "_")
-    output_base = args.output if args.output else f"{safe_org_name}_{args.rank}_{args.threshold}"
+    base_name = args.output if args.output else f"{safe_org_name}_{args.rank}_{args.threshold}"
+    output_base = os.path.join(OUTPUT_DIR, base_name)
     
     if args.metadata and args.category:
         generate_grouped_microbiome_plots(
@@ -221,7 +251,8 @@ if __name__ == "__main__":
             threshold=args.threshold,
             organism_name=args.organism, 
             output_base=output_base,
-            fmt=args.format.lower()
+            fmt=args.format.lower(),
+            category_order=args.order  
         )
     else:
         generate_individual_microbiome_plot(
@@ -230,5 +261,6 @@ if __name__ == "__main__":
             threshold=args.threshold,
             organism_name=args.organism, 
             output_base=output_base,
-            fmt=args.format.lower()
+            fmt=args.format.lower(),
+            sample_order=args.order   
         )

@@ -1,4 +1,5 @@
 import argparse
+import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -228,8 +229,12 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     
+    OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'results', 'PCoA_PieCharts')
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
     safe_org_name = args.organism.replace(" ", "_")
-    output_base = args.output if args.output else f"{safe_org_name}_{args.rank}_{args.threshold}"
+    base_name = args.output if args.output else f"{safe_org_name}_{args.rank}_{args.threshold}"
+    output_base = os.path.join(OUTPUT_DIR, base_name)
     
     # Data extraction phase
     df = pd.read_excel(args.data, sheet_name=0)
