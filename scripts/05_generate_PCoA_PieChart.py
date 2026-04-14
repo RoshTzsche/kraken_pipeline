@@ -110,16 +110,66 @@ def confidence_ellipse(x, y, ax, n_std=2.447, facecolor='none', **kwargs):
     ellipse.set_transform(transf + ax.transData)
     return ax.add_patch(ellipse)
 
-def generate_pcoa_plot(df_rank, rank_level, metadata_path, category_col, sample_id_col, output_base, fmt):
-    """Phase 2: Generates the Principal Coordinate Analysis (PCoA) via Spectral Decomposition."""
+def generate_pcoa_plot(df_rank, rank_level, metadata_path, category_col, sample_id_col, output_base, fmt, unknown_mode='drop_all'):
+    """
+    Phase 2: Generates the Principal Coordinate Analysis (PCoA) via Spectral Decomposition.
+
+    unknown_mode controls how samples absent from metadata are handled:
+      'drop_all'  — exclude from distance matrix AND plot (cleanest ordination)
+      'drop_plot' — keep in distance matrix math, but omit from the final plot
+      'keep'      — include in plot as an explicit 'Unknown' group
+    """
     print(f"[*] Solving spectral decomposition for PCoA -> {output_base}")
-    
+    print(f"    [*] Unknown sample mode: '{unknown_mode}'")
+
     sample_cols = [col for col in df_rank.columns if col not in ['Rank', 'TaxID', 'original_header', 'Name', 'Scientific Name']]
     df_counts = df_rank[sample_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
-    
+
     rel_abund = df_counts.div(df_counts.sum(axis=0), axis=1).T
     sample_names = rel_abund.index.tolist()
-    
+
+    # --- Resolve metadata groups before touching the matrix ---
+    groups = ["All Samples"] * len(sample_names)
+    if metadata_path and category_col:
+        meta_df = pd.read_csv(metadata_path) if metadata_path.endswith('.csv') else pd.read_excel(metadata_path)
+
+        if pd.api.types.is_numeric_dtype(meta_df[category_col]):
+            print(f"    [*] Continuous numerical variable detected for '{category_col}'.")
+            print(f"    [*] Applying Quantile Binning (q=4) to ensure sufficient group sizes for covariance calculation.")
+            try:
+                bins = pd.qcut(meta_df[category_col].dropna(), q=4)
+                meta_df[category_col] = bins.astype(str)
+            except ValueError:
+                bins = pd.cut(meta_df[category_col].dropna(), bins=4)
+                meta_df[category_col] = bins.astype(str)
+
+        meta_df[sample_id_col] = meta_df[sample_id_col].astype(str).str.strip().str.lower()
+        meta_map = dict(zip(meta_df[sample_id_col], meta_df[category_col].astype(str)))
+
+        groups = []
+        for name in sample_names:
+            clean_name = name.split('_')[0].strip().lower()
+            mapped_val = meta_map.get(clean_name, "Unknown")
+            if mapped_val == 'nan':
+                mapped_val = "Unknown"
+            if mapped_val == "Unknown":
+                print(f"    [!] Topological Mismatch: Abundance Sample '{name}' (cleaned to '{clean_name}') NOT FOUND in metadata.")
+            groups.append(mapped_val)
+
+    # --- Apply unknown_mode: drop_all removes samples before matrix computation ---
+    if unknown_mode == 'drop_all':
+        keep_mask = [g != 'Unknown' for g in groups]
+        n_dropped = keep_mask.count(False)
+        if n_dropped > 0:
+            dropped = [sample_names[i] for i, k in enumerate(keep_mask) if not k]
+            print(f"    [!] drop_all: removing {n_dropped} unmatched sample(s) from matrix and plot: {dropped}")
+        rel_abund  = rel_abund.iloc[[i for i, k in enumerate(keep_mask) if k]]
+        sample_names = [s for s, k in zip(sample_names, keep_mask) if k]
+        groups       = [g for g, k in zip(groups, keep_mask) if k]
+        if rel_abund.empty:
+            print("    [!] No matched samples remaining after drop_all. Aborting PCoA plot.")
+            return
+
     # Non-Euclidean Bray-Curtis metric calculation
     dist_array = pdist(rel_abund.values, metric='braycurtis')
     dist_matrix = squareform(dist_array)
@@ -140,34 +190,22 @@ def generate_pcoa_plot(df_rank, rank_level, metadata_path, category_col, sample_
     variance_explained = (eigenvalues / np.sum(eigenvalues)) * 100
     pc1_var, pc2_var = variance_explained[0], variance_explained[1]
 
-    groups = ["All Samples"] * n
-    if metadata_path and category_col:
-        meta_df = pd.read_csv(metadata_path) if metadata_path.endswith('.csv') else pd.read_excel(metadata_path)
-        
-        if pd.api.types.is_numeric_dtype(meta_df[category_col]):
-            print(f"    [*] Continuous numerical variable detected for '{category_col}'.")
-            print(f"    [*] Applying Quantile Binning (q=4) to ensure sufficient group sizes for covariance calculation.")
-            try:
-                bins = pd.qcut(meta_df[category_col].dropna(), q=4)
-                meta_df[category_col] = bins.astype(str)
-            except ValueError:
-                bins = pd.cut(meta_df[category_col].dropna(), bins=4)
-                meta_df[category_col] = bins.astype(str)
-
-        meta_df[sample_id_col] = meta_df[sample_id_col].astype(str).str.strip().str.lower()
-        meta_map = dict(zip(meta_df[sample_id_col], meta_df[category_col].astype(str)))
-        
-        groups = []
-        for name in sample_names:
-            clean_name = name.split('_')[0].strip().lower()
-            if clean_name not in meta_map:
-                print(f"    [!] Topological Mismatch: Abundance Sample '{name}' (cleaned to '{clean_name}') NOT FOUND in metadata.")
-            mapped_val = meta_map.get(clean_name, "Unknown")
-            if mapped_val == 'nan':
-                mapped_val = "Unknown"
-            groups.append(mapped_val)
-            
     df_pcoa = pd.DataFrame({'PC1': coords[:, 0], 'PC2': coords[:, 1], 'Group': groups, 'Sample': sample_names})
+
+    # --- Apply unknown_mode: drop_plot removes from visualization only ---
+    if unknown_mode == 'drop_plot':
+        unknown_mask = df_pcoa['Group'] == 'Unknown'
+        n_dropped = unknown_mask.sum()
+        if n_dropped > 0:
+            dropped = df_pcoa.loc[unknown_mask, 'Sample'].tolist()
+            print(f"    [!] drop_plot: {n_dropped} unmatched sample(s) kept in matrix, hidden from plot: {dropped}")
+        df_pcoa = df_pcoa[~unknown_mask].reset_index(drop=True)
+        if df_pcoa.empty:
+            print("    [!] No matched samples remaining after drop_plot. Aborting PCoA plot.")
+            return
+
+    # --- 'keep' mode: unknowns pass through as-is and are plotted as 'Unknown' group ---
+
     unique_groups = df_pcoa['Group'].unique()
     
     fig, ax = plt.subplots(figsize=(11, 8), facecolor='#f8f9fa')
@@ -226,6 +264,13 @@ if __name__ == "__main__":
                         help='Topological projection format: pdf (continuous vector), png/tiff (discrete raster at 300 DPI).')
     parser.add_argument('--mode', type=str, choices=['pie', 'pcoa', 'both'], default='both', 
                         help='Routing logic: scalar simplex (pie), spectral decomposition (pcoa), or both.')
+    parser.add_argument('--unknown', type=str, choices=['drop_all', 'drop_plot', 'keep'], default='drop_all',
+                        help=(
+                            'How to handle samples absent from metadata. '
+                            'drop_all: remove from distance matrix AND plot (cleanest ordination). '
+                            'drop_plot: keep in Bray-Curtis matrix but hide from visualization. '
+                            'keep: plot as an explicit "Unknown" group.'
+                        ))
 
     args = parser.parse_args()
     
@@ -248,6 +293,6 @@ if __name__ == "__main__":
     
     if args.mode in ['pcoa', 'both']:
         if args.metadata and args.category:
-            generate_pcoa_plot(df_rank, args.rank, args.metadata, args.category, args.sample_id, f"{output_base}_PCoA", args.format.lower())
+            generate_pcoa_plot(df_rank, args.rank, args.metadata, args.category, args.sample_id, f"{output_base}_PCoA", args.format.lower(), unknown_mode=args.unknown)
         else:
             print("[!] WARNING: PCoA computation requires valid metadata and categorical vectors. Aborting sub-routine.")
