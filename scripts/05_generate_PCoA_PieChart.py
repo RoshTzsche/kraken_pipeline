@@ -164,19 +164,69 @@ def compute_permanova(dist_matrix, groups, n_perm=999, seed=42):
     return float(obs_f), float(obs_r2), float(p_val)
 
 
+def compute_pairwise_anosim(dist_matrix, groups, n_perm=999, seed=42):
+    """
+    Pairwise ANOSIM between every unique group pair.
+    Returns a DataFrame with columns: Comparison | R | p | Interpretation
+    """
+    unique_groups = sorted(set(groups))
+    groups_arr    = np.array(groups)
+    rows          = []
+
+    for i in range(len(unique_groups)):
+        for j in range(i + 1, len(unique_groups)):
+            g1, g2   = unique_groups[i], unique_groups[j]
+            mask     = (groups_arr == g1) | (groups_arr == g2)
+            idx      = np.where(mask)[0]
+            sub_dist = dist_matrix[np.ix_(idx, idx)]
+            sub_grps = groups_arr[mask]
+            r, p     = compute_anosim(sub_dist, sub_grps, n_perm=n_perm, seed=seed)
+
+            if not np.isnan(r):
+                if   r < 0.1: interp = "Negligible separation"
+                elif r < 0.25: interp = "Low separation"
+                elif r < 0.5:  interp = "Moderate separation"
+                else:           interp = "Strong separation"
+            else:
+                interp = "N/A"
+
+            rows.append({
+                'Comparison':     f"{g1} vs {g2}",
+                'R':              round(r, 4) if not np.isnan(r) else "N/A",
+                'p':              round(p, 4) if not np.isnan(p) else "N/A",
+                'Significant':    "Yes" if (not np.isnan(p) and p < 0.05) else "No",
+                'Interpretation': interp,
+            })
+
+    return pd.DataFrame(rows)
+
+
 def autopct_generator(pct):
     # Left for compatibility, not used in the new 3D pie chart callouts
     return f'{pct:.1f}%' if pct >= 1.5 else ''
 
 
 def generate_global_pie_chart(df_rank, rank_level, threshold, output_base, fmt,
-                               no_table=False):
+                               no_table=False, label_col=None):
     """Phase 1: Generates the Relative Abundance Probability Simplex with 3D Callouts."""
     print(f"[*] Extracting scalar probability simplex -> {output_base}")
 
     sample_cols = [col for col in df_rank.columns
                    if col not in ['Rank', 'TaxID', 'original_header', 'Name', 'Scientific Name']]
-    df_counts   = df_rank[sample_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
+
+    # --- Resolve label index: use label_col if provided and present, else fall back to TaxID/Name ---
+    df_work = df_rank.copy()
+    if label_col and label_col in df_work.columns:
+        print(f"    [*] Pie chart labels resolved from column: '{label_col}'")
+        df_work.index = df_work[label_col].astype(str)
+    elif 'Name' in df_work.columns:
+        df_work.index = df_work['Name'].astype(str)
+    elif 'Scientific Name' in df_work.columns:
+        df_work.index = df_work['Scientific Name'].astype(str)
+    else:
+        print("    [!] No label column found — using row index as label.")
+
+    df_counts   = df_work[sample_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
 
     rel_abund      = df_counts.div(df_counts.sum(axis=0), axis=1)
     mean_rel_abund = rel_abund.mean(axis=1)
@@ -191,7 +241,7 @@ def generate_global_pie_chart(df_rank, rank_level, threshold, output_base, fmt,
     plot_data = plot_data.sort_values(ascending=False)
     total_sum = plot_data.sum()
 
-    fig, ax = plt.subplots(figsize=(14, 8))
+    fig, ax = plt.subplots(figsize=(16, 9))
     
     # Efecto 3D: Añadir un pequeño 'explode' (separación) a cada sector y proyectar sombra
     explode = [0.03] * len(plot_data)
@@ -203,31 +253,89 @@ def generate_global_pie_chart(df_rank, rank_level, threshold, output_base, fmt,
         wedgeprops=dict(edgecolor='white', linewidth=1.0)
     )
 
-    # Generación de líneas directrices (callout lines) hacia cada etiqueta
-    kw = dict(arrowprops=dict(arrowstyle="-", color="black", linewidth=0.8),
-              zorder=0, va="center")
+    # -----------------------------------------------------------------------
+    # Collision-aware callout label system
+    # Strategy:
+    #   1. Compute ideal (x, y) anchor on the wedge midpoint radius.
+    #   2. Split labels into LEFT (x<0) and RIGHT (x>=0) pools.
+    #   3. Within each pool sort by ideal y, then push labels apart
+    #      until no two consecutive labels are closer than MIN_SEP.
+    #   4. Draw a two-segment leader line: wedge-edge → bend point → label.
+    # -----------------------------------------------------------------------
+    LABEL_R   = 1.15   # radius of the bend / intermediate waypoint
+    TEXT_X    = 1.55   # horizontal distance of text from centre
+    MIN_SEP   = 0.13   # minimum vertical gap between adjacent labels (axes units)
+    FONT_SIZE = 11
 
-    for i, p in enumerate(wedges):
-        # Ángulo medio para la anotación radial
-        ang = (p.theta2 - p.theta1)/2. + p.theta1
-        y = np.sin(np.deg2rad(ang))
-        x = np.cos(np.deg2rad(ang))
-        
-        # Orientación dinámica: izquierda o derecha dependiendo del eje x
-        horizontalalignment = {-1: "right", 1: "left"}[int(np.sign(x))]
-        
-        # Estilo de conexión vectorial en forma angular para la línea
-        connectionstyle = f"angle,angleA=0,angleB={ang}"
-        kw["arrowprops"].update({"connectionstyle": connectionstyle})
-        
-        # Preparar el texto: Nombre + Porcentaje
-        label = plot_data.index[i]
-        pct = (plot_data.values[i] / total_sum) * 100
-        label_text = f"{label} ({pct:.1f}%)"
-        
-        # Anotación (xy: punto en el borde del pastel, xytext: ubicación espaciada del texto)
-        ax.annotate(label_text, xy=(x, y), xytext=(1.35*np.sign(x), 1.2*y),
-                    horizontalalignment=horizontalalignment, fontsize=12, fontweight='bold', **kw)
+    # Build raw label info
+    label_info = []
+    for i, wedge in enumerate(wedges):
+        ang      = (wedge.theta2 - wedge.theta1) / 2.0 + wedge.theta1
+        ang_rad  = np.deg2rad(ang)
+        xi       = np.cos(ang_rad)
+        yi       = np.sin(ang_rad)
+        pct      = (plot_data.values[i] / total_sum) * 100
+        label_info.append({
+            'wedge':   wedge,
+            'ang':     ang,
+            'xi':      xi,          # unit-circle anchor x
+            'yi':      yi,          # unit-circle anchor y
+            'bend_x':  LABEL_R * xi,
+            'bend_y':  LABEL_R * yi,
+            'side':    'right' if xi >= 0 else 'left',
+            'text':    f"{plot_data.index[i]} ({pct:.1f}%)",
+        })
+
+    def _resolve_collisions(items, min_sep):
+        """Push labels apart (upward/downward) until no overlap remains."""
+        if not items:
+            return items
+        # Sort by ideal y
+        items = sorted(items, key=lambda d: d['bend_y'])
+        if len(items) == 1:
+            items[0]['label_y'] = items[0]['bend_y']
+            return items
+        placed = [d['bend_y'] for d in items]
+
+        # Iterative spreading — up to 50 passes
+        for _ in range(50):
+            moved = False
+            for k in range(1, len(placed)):
+                gap = placed[k] - placed[k - 1]
+                if gap < min_sep:
+                    shift = (min_sep - gap) / 2.0
+                    placed[k - 1] -= shift
+                    placed[k]     += shift
+                    moved = True
+            if not moved:
+                break
+
+        for d, y_new in zip(items, placed):
+            d['label_y'] = y_new
+        return items
+
+    right_items = _resolve_collisions([d for d in label_info if d['side'] == 'right'], MIN_SEP)
+    left_items  = _resolve_collisions([d for d in label_info if d['side'] == 'left'],  MIN_SEP)
+
+    for d in right_items + left_items:
+        ha      = 'left' if d['side'] == 'right' else 'right'
+        text_x  = TEXT_X  if d['side'] == 'right' else -TEXT_X
+        label_y = d['label_y']
+
+        # Single two-segment leader: wedge-edge → bend-point → label
+        ax.plot(
+            [d['xi'],     d['bend_x'], text_x],
+            [d['yi'],     d['bend_y'], label_y],
+            color='#444444', linewidth=0.9, zorder=4, solid_capstyle='round'
+        )
+
+        # Text only — no arrow
+        ax.text(
+            text_x, label_y, d['text'],
+            ha=ha, va='center',
+            fontsize=FONT_SIZE, fontweight='bold',
+            zorder=5,
+        )
 
     ax.set_title(f"Global Relative Abundance ({rank_level.capitalize()})",
                  fontsize=18, fontweight='bold', pad=30)
@@ -436,7 +544,7 @@ def generate_pcoa_plot(df_rank, rank_level, metadata_path, category_col, sample_
 
     stats_text = (
         f"ANOSIM     R = {_fmt(anosim_r_val)}   p = {_fmt(anosim_p_val)}\n"
-        f"PERMANOVA  F = {_fmt(perm_f_val, 2)}   R² = {_fmt(perm_r2_val)}   p = {_fmt(perm_p_val)}"
+        f"PERMANOVA  F = {_fmt(perm_f_val, 2)}   p = {_fmt(perm_p_val)}"
     )
     ax.text(0.03, 0.97, stats_text,
             transform=ax.transAxes, ha='left', va='top',
@@ -449,7 +557,7 @@ def generate_pcoa_plot(df_rank, rank_level, metadata_path, category_col, sample_
     export_topological_projection(fig, output_base, fmt, pad_inches=0.5)
     plt.close(fig)
 
-    # PCoA summary table — Sheet 1: coordinates + groups; Sheet 2: Bray-Curtis matrix
+    # PCoA summary table — Sheet 1: coordinates + groups; Sheet 2: Bray-Curtis matrix; Sheet 3: Pairwise ANOSIM
     if not no_table:
         coords_df = df_pcoa[['Sample', 'Group', 'PC1', 'PC2']].round(6).reset_index(drop=True)
 
@@ -460,10 +568,15 @@ def generate_pcoa_plot(df_rank, rank_level, metadata_path, category_col, sample_
         ).round(6)
         dist_df.insert(0, 'Sample', _stats_samples)
 
+        pairwise_df = compute_pairwise_anosim(_dist_stats, _stats_groups)
+
         export_summary_table(
             coords_df, output_base,
             sheet_name='PCoA_Coordinates',
-            extra_sheets={'BrayCurtis_Distance': dist_df}
+            extra_sheets={
+                'BrayCurtis_Distance': dist_df,
+                'Pairwise_ANOSIM':     pairwise_df,
+            }
         )
 
 
@@ -498,6 +611,10 @@ if __name__ == "__main__":
                             'drop_plot: keep in Bray-Curtis matrix, hide from plot. '
                             'keep: plot as an explicit "Unknown" group.'
                         ))
+    parser.add_argument('--label_col', type=str, default=None,
+                        help='Column to use as pie chart slice labels (e.g. "Name", "Scientific Name"). '
+                             'Defaults to "Name" if present, then "Scientific Name", then row index.')
+
     parser.add_argument('--no_table', action='store_true',
                         help='Skip exporting summary tables (.xlsx).')
 
@@ -522,7 +639,8 @@ if __name__ == "__main__":
         generate_global_pie_chart(
             df_rank, args.rank, args.threshold,
             f"{output_base}_PieChart", args.format.lower(),
-            no_table=args.no_table
+            no_table=args.no_table,
+            label_col=args.label_col
         )
 
     if args.mode in ['pcoa', 'both']:
