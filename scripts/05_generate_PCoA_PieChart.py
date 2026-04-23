@@ -165,12 +165,13 @@ def compute_permanova(dist_matrix, groups, n_perm=999, seed=42):
 
 
 def autopct_generator(pct):
+    # Left for compatibility, not used in the new 3D pie chart callouts
     return f'{pct:.1f}%' if pct >= 1.5 else ''
 
 
 def generate_global_pie_chart(df_rank, rank_level, threshold, output_base, fmt,
                                no_table=False):
-    """Phase 1: Generates the Relative Abundance Probability Simplex."""
+    """Phase 1: Generates the Relative Abundance Probability Simplex with 3D Callouts."""
     print(f"[*] Extracting scalar probability simplex -> {output_base}")
 
     sample_cols = [col for col in df_rank.columns
@@ -188,29 +189,49 @@ def generate_global_pie_chart(df_rank, rank_level, threshold, output_base, fmt,
         plot_data['Others (<{:.1%})'.format(threshold)] = low_abund.sum()
 
     plot_data = plot_data.sort_values(ascending=False)
+    total_sum = plot_data.sum()
 
     fig, ax = plt.subplots(figsize=(14, 8))
-    wedges, texts, autotexts = ax.pie(
-        plot_data, labels=None, autopct=autopct_generator,
-        startangle=140, colors=COLORS[:len(plot_data)],
-        wedgeprops=dict(edgecolor='white', linewidth=1.5)
+    
+    # Efecto 3D: Añadir un pequeño 'explode' (separación) a cada sector y proyectar sombra
+    explode = [0.03] * len(plot_data)
+
+    # Gráfico base con sombra, sin etiquetas internas ni leyenda
+    wedges, texts = ax.pie(
+        plot_data, labels=None, startangle=140, 
+        colors=COLORS[:len(plot_data)], explode=explode, shadow=True,
+        wedgeprops=dict(edgecolor='white', linewidth=1.0)
     )
 
-    plt.setp(autotexts, size=11, weight="bold", color="white")
-    for autotext in autotexts:
-        autotext.set_path_effects([path_effects.withStroke(linewidth=2, foreground='black')])
+    # Generación de líneas directrices (callout lines) hacia cada etiqueta
+    kw = dict(arrowprops=dict(arrowstyle="-", color="black", linewidth=0.8),
+              zorder=0, va="center")
 
-    total_sum     = plot_data.sum()
-    legend_labels = [f"{idx} ({ (val/total_sum)*100:.2f}% )"
-                     for idx, val in plot_data.items()]
-
-    ax.legend(wedges, legend_labels, title=f"{rank_level.capitalize()} Taxonomy",
-              title_fontproperties={'weight': 'bold', 'size': 14}, loc="center left",
-              bbox_to_anchor=(1.05, 0.5), fontsize=12, frameon=False,
-              handlelength=1.5, handleheight=1.5)
+    for i, p in enumerate(wedges):
+        # Ángulo medio para la anotación radial
+        ang = (p.theta2 - p.theta1)/2. + p.theta1
+        y = np.sin(np.deg2rad(ang))
+        x = np.cos(np.deg2rad(ang))
+        
+        # Orientación dinámica: izquierda o derecha dependiendo del eje x
+        horizontalalignment = {-1: "right", 1: "left"}[int(np.sign(x))]
+        
+        # Estilo de conexión vectorial en forma angular para la línea
+        connectionstyle = f"angle,angleA=0,angleB={ang}"
+        kw["arrowprops"].update({"connectionstyle": connectionstyle})
+        
+        # Preparar el texto: Nombre + Porcentaje
+        label = plot_data.index[i]
+        pct = (plot_data.values[i] / total_sum) * 100
+        label_text = f"{label} ({pct:.1f}%)"
+        
+        # Anotación (xy: punto en el borde del pastel, xytext: ubicación espaciada del texto)
+        ax.annotate(label_text, xy=(x, y), xytext=(1.35*np.sign(x), 1.2*y),
+                    horizontalalignment=horizontalalignment, fontsize=12, fontweight='bold', **kw)
 
     ax.set_title(f"Global Relative Abundance ({rank_level.capitalize()})",
-                 fontsize=18, fontweight='bold', pad=20)
+                 fontsize=18, fontweight='bold', pad=30)
+                 
     plt.tight_layout()
     export_topological_projection(fig, output_base, fmt, pad_inches=0.5)
     plt.close(fig)
