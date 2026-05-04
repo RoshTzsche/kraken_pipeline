@@ -1,5 +1,5 @@
 """
-06_generate_LEfSe.py
+09_generate_lefse.py
 ====================
 LEfSe — Linear Discriminant Analysis Effect Size
 Anderson 2001 / Segata et al. 2011 (PLoS Comput Biol)
@@ -8,7 +8,7 @@ Pipeline-compatible script for the Kraken2 taxonomic classification output.
 
 Usage
 -----
-python 06_generate_LEfSe.py \
+python 09_generate_LEfSe.py \
     -d  ../results/final_tables/taxonomic_classification_clean.xlsx \
     -r  genus \
     -m  metadata.csv \
@@ -24,6 +24,7 @@ Optional
 --wilcox_alpha    Wilcoxon significance cut-off (default: 0.05)
 --no_table        Skip Excel export
 --label_col       Column to use as feature label (default: "Name")
+--tree_threshold  (Legacy) Ignored in vectorized version, kept for compatibility.
 """
 
 import argparse
@@ -39,6 +40,7 @@ import matplotlib.patches as mpatches
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy import stats as sp_stats
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from tqdm import tqdm
 
 warnings.filterwarnings('ignore')
 
@@ -110,7 +112,7 @@ def kruskal_wallis_test(ra_df, groups, alpha=0.05):
     """
     unique_groups = sorted(set(groups))
     passing = {}
-    for feat in ra_df.index:
+    for feat in tqdm(ra_df.index, desc='  Kruskal-Wallis', unit='feat', ncols=72, colour='cyan'):
         grp_arrays = [ra_df.loc[feat, [s for s, g in zip(ra_df.columns, groups) if g == ug]].values
                       for ug in unique_groups]
         # need at least 2 non-degenerate groups
@@ -137,8 +139,7 @@ def wilcoxon_pairwise_test(ra_df, groups, candidate_features, alpha=0.05):
     unique_groups = sorted(set(groups))
     groups_arr    = np.array(groups)
     passed = {}
-
-    for feat in candidate_features:
+    for feat in tqdm(candidate_features, desc='  Wilcoxon      ', unit='feat', ncols=72, colour='green'):
         row        = ra_df.loc[feat]
         medians    = {ug: row[[s for s, g in zip(ra_df.columns, groups) if g == ug]].median()
                       for ug in unique_groups}
@@ -182,7 +183,7 @@ def compute_lda_scores(ra_df, groups, candidate_features, winning_classes):
     # Build full feature matrix (samples × features) log-transformed
     X_full = np.log1p(ra_df.loc[candidate_features].T.values)   # (n_samples, n_feats)
 
-    for feat_idx, feat in enumerate(candidate_features):
+    for feat_idx, feat in enumerate(tqdm(candidate_features, desc='  LDA scoring   ', unit='feat', ncols=72, colour='yellow')):
         x = X_full[:, feat_idx].reshape(-1, 1)   # single feature
 
         winner = winning_classes[feat]
@@ -228,15 +229,10 @@ def _get_label(row, label_col):
     return str(row.name)
 
 
-def build_taxonomy_tree(df_full, common_samples, label_col=None):
+def build_taxonomy_tree(df_full, common_samples, label_col=None, tree_threshold=0.95):
     """
     Build a lightweight tree from all ranks in the data.
-
-    Returns
-    -------
-    nodes : dict  node_id -> {name, rank, rank_idx, children, parent,
-                               counts (np.array over common_samples)}
-    present_ranks : list of rank strings in RANK_ORDER order
+    *Optimized with Numpy Vectorized Pearson Correlation*
     """
     meta_cols = {'Rank', 'TaxID', 'original_header', 'Name', 'Scientific Name'}
 
@@ -271,12 +267,9 @@ def build_taxonomy_tree(df_full, common_samples, label_col=None):
                                lda=0.0, cls=None, color='#BBBBBB', xy=(0.0, 0.0))
 
     # ---------------------------------------------------------------
-    # Parent-child inference via count correlation
-    # For each node at rank[i], find the parent at rank[i-1] whose
-    # count vector has the highest Pearson r with the child's vector.
-    # Fall back to first node of parent rank if no good correlation.
+    # Parent-child inference via count correlation (VECTORIZED)
     # ---------------------------------------------------------------
-    for r_idx in range(len(present_ranks)):
+    for r_idx in tqdm(range(len(present_ranks)), desc='  Building tree ', unit='rank', ncols=72, colour='magenta'):
         rank     = present_ranks[r_idx]
         children = [nid for nid, n in nodes.items() if n['rank'] == rank]
 
@@ -290,22 +283,43 @@ def build_taxonomy_tree(df_full, common_samples, label_col=None):
         if not parent_pool:
             parent_pool = ['__root__']
 
-        # Pre-stack parent counts
-        par_counts = np.vstack([nodes[p]['counts'] for p in parent_pool])  # (P, S)
+        # Pre-stack parent counts: shape (P, S)
+        par_counts = np.vstack([nodes[p]['counts'] for p in parent_pool])  
+        
+        # --- VECTORIZATION MAGIC ---
+        # Center and normalize ALL parents to unit vectors simultaneously
+        par_mean = par_counts.mean(axis=1, keepdims=True)
+        par_centered = par_counts - par_mean
+        par_norm = np.linalg.norm(par_centered, axis=1, keepdims=True)
+        
+        # Avoid division by zero warnings
+        with np.errstate(divide='ignore', invalid='ignore'):
+            par_unit = np.where(par_norm == 0, 0, par_centered / par_norm)
+        # ---------------------------
 
         for child_id in children:
             cv = nodes[child_id]['counts']
+            
+            # If child has no counts or no samples, default to first parent
             if cv.sum() == 0 or par_counts.shape[1] == 0:
                 best_par = parent_pool[0]
             else:
-                # Pearson r between child and each parent
-                corrs = []
-                for pv in par_counts:
-                    if pv.std() < 1e-12 or cv.std() < 1e-12:
-                        corrs.append(0.0)
-                    else:
-                        corrs.append(float(np.corrcoef(cv, pv)[0, 1]))
-                best_par = parent_pool[int(np.argmax(corrs))]
+                cv_centered = cv - cv.mean()
+                cv_norm = np.linalg.norm(cv_centered)
+                
+                if cv_norm < 1e-12:
+                    best_par = parent_pool[0]
+                else:
+                    # Normalize child to unit vector
+                    cv_unit = cv_centered / cv_norm
+                    
+                    # Matrix-vector multiplication (dot product)
+                    # Calculates Pearson correlation against ALL parents INSTANTLY!
+                    corrs = par_unit @ cv_unit
+                    
+                    # Find the parent with the highest correlation
+                    best_idx = np.argmax(corrs)
+                    best_par = parent_pool[best_idx]
 
             nodes[child_id]['parent'] = best_par
             nodes[best_par]['children'].append(child_id)
@@ -346,7 +360,7 @@ def _leaf_count(node_id, nodes):
 
 
 def generate_cladogram(nodes, present_ranks, biomarkers_df, color_map,
-                        output_base, fmt, title_suffix=''):
+                       output_base, fmt, title_suffix=''):
     """
     Draw the classic LEfSe circular cladogram.
 
@@ -542,7 +556,7 @@ def run_lefse(df_rank, rank_level, metadata_path, category_col, sample_id_col,
               output_base, fmt,
               lda_threshold=2.0, kw_alpha=0.05, wilcox_alpha=0.05,
               top_n=30, sort_by_lda=False, label_col=None, no_table=False,
-              df_full=None, no_cladogram=False):
+              df_full=None, no_cladogram=False, tree_threshold=0.95):
 
     print(f"[*] Running LEfSe → {output_base}")
 
@@ -667,10 +681,10 @@ def run_lefse(df_rank, rank_level, metadata_path, category_col, sample_id_col,
         records.append({
             'Feature':       feat,
             'Class':         winner,
-            'LDA_score':     round(lda,    4),
-            'Abs_LDA':       round(abs_lda,4),
-            'KW_H':          round(H,      4),
-            'KW_p':          round(kw_p,   6),
+            'LDA_score':     round(lda,     4),
+            'Abs_LDA':       round(abs_lda, 4),
+            'KW_H':          round(H,       4),
+            'KW_p':          round(kw_p,    6),
             'Mean_RA':       round(float(ra_df.loc[feat].mean()), 6),
         })
 
@@ -783,7 +797,7 @@ def run_lefse(df_rank, rank_level, metadata_path, category_col, sample_id_col,
     # -------------------------------------------------------------------
     if not no_cladogram:
         src = df_full if df_full is not None else df_rank
-        nodes, present_ranks = build_taxonomy_tree(src, common_samples, label_col=label_col)
+        nodes, present_ranks = build_taxonomy_tree(src, common_samples, label_col=label_col, tree_threshold=tree_threshold)
         if present_ranks:
             generate_cladogram(
                 nodes, present_ranks, df_results, color_map,
@@ -831,6 +845,8 @@ def main():
                         help='Sort bars by signed LDA score instead of grouping by class.')
     parser.add_argument('--label_col',             type=str, default=None,
                         help='Column to use as feature label (e.g. "Name", "Scientific Name").')
+    parser.add_argument('--tree_threshold',        type=float, default=0.95,
+                        help='Pearson correlation threshold for early exit in tree building (default: 0.95).')
     parser.add_argument('--no_cladogram',          action='store_true',
                         help='Skip cladogram plot.')
     parser.add_argument('--no_table',              action='store_true',
@@ -869,6 +885,7 @@ def main():
         no_table      = args.no_table,
         df_full       = df,
         no_cladogram  = args.no_cladogram,
+        tree_threshold= args.tree_threshold,
     )
 
 
