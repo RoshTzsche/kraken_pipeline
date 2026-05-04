@@ -271,29 +271,41 @@ def apply_theme_bw(ax):
 
 
 # ---------------------------------------------------------------------------
-# Draw one violin facet panel (used by taxa mode)
-# No per-panel title or axis labels — those are shared at figure level
+# Draw one plot panel (used by taxa mode)
 # ---------------------------------------------------------------------------
-def draw_violin_panel(ax, sub_df, group_order, palette_map):
+def draw_plot_panel(ax, sub_df, group_order, palette_map, plot_type="violin"):
     groups        = group_order
     data_by_group = [sub_df[sub_df["Group"] == g]["Abundance"].dropna().values
                      for g in groups]
 
-    # Violin bodies — only for groups with >1 data point
+    # Plot bodies — only for groups with >1 data point
     valid_pos  = [i for i, d in enumerate(data_by_group) if len(d) > 1]
     valid_data = [data_by_group[i] for i in valid_pos]
 
     if valid_data:
-        parts = ax.violinplot(valid_data, positions=valid_pos,
-                              widths=0.70, showmeans=False,
-                              showmedians=False, showextrema=False)
-        for idx, body in zip(valid_pos, parts["bodies"]):
-            body.set_facecolor(palette_map[groups[idx]])
-            body.set_edgecolor("black")
-            body.set_linewidth(1.1)
-            body.set_alpha(0.60)
+        if plot_type == "violin":
+            parts = ax.violinplot(valid_data, positions=valid_pos,
+                                  widths=0.70, showmeans=False,
+                                  showmedians=False, showextrema=False)
+            for idx, body in zip(valid_pos, parts["bodies"]):
+                body.set_facecolor(palette_map[groups[idx]])
+                body.set_edgecolor("black")
+                body.set_linewidth(1.1)
+                body.set_alpha(0.60)
+        elif plot_type == "boxplot":
+            bplot = ax.boxplot(valid_data, positions=valid_pos,
+                               widths=0.65, patch_artist=True,
+                               medianprops=dict(color="black", linewidth=1.2),
+                               flierprops=dict(marker="o", markerfacecolor="black", markersize=4, alpha=0.5))
+            for idx, patch in zip(valid_pos, bplot['boxes']):
+                patch.set_facecolor(palette_map[groups[idx]])
+                patch.set_edgecolor("black")
+                patch.set_linewidth(1.1)
+                patch.set_alpha(0.60)
+            for element in ['whiskers', 'caps']:
+                plt.setp(bplot[element], color="black", linewidth=1.1)
 
-    # Mean point + SE error bar
+    # Mean point + SE error bar (Added regardless of plot_type to maintain original data visualization)
     for i, g in enumerate(groups):
         vals = data_by_group[i]
         if len(vals) == 0:
@@ -374,14 +386,14 @@ def draw_strip_headers(fig, axes_flat, taxa_list):
 # ---------------------------------------------------------------------------
 # Main pipeline — TAXA MODE (original behaviour, ANOVA/Tukey CLD)
 # ---------------------------------------------------------------------------
-def generate_taxa_violin_plots(data_path, metadata_path, category_col,
-                                sample_id_col, rank_level, threshold,
-                                organism_name, output_base, fmt, no_table=False):
+def generate_taxa_plots(data_path, metadata_path, category_col,
+                        sample_id_col, rank_level, threshold,
+                        organism_name, output_base, fmt, plot_type="violin", no_table=False):
     """
-    Generates per-taxon violin plots (ANOVA + Tukey HSD CLD) in ggplot2 facet_wrap style.
+    Generates per-taxon violin/box plots (ANOVA + Tukey HSD CLD) in ggplot2 facet_wrap style.
     Optionally exports a long-format abundance summary table (.xlsx).
     """
-    print(f"[*] Generating statistical violin plots (ANOVA/Tukey) → {output_base}")
+    print(f"[*] Generating statistical {plot_type} plots (ANOVA/Tukey) → {output_base}")
 
     # 1. Load & filter
     df      = pd.read_excel(data_path, sheet_name=0)
@@ -450,7 +462,7 @@ def generate_taxa_violin_plots(data_path, metadata_path, category_col,
     # 8. Draw each panel
     for i, taxon in enumerate(taxa_list):
         sub_df = melted[melted["Taxon"] == taxon].dropna(subset=["Abundance"])
-        draw_violin_panel(axes[i], sub_df, group_order, palette_map)
+        draw_plot_panel(axes[i], sub_df, group_order, palette_map, plot_type=plot_type)
 
     # Hide unused axes
     for j in range(n_vars, len(axes)):
@@ -526,19 +538,12 @@ def generate_taxa_violin_plots(data_path, metadata_path, category_col,
 # ---------------------------------------------------------------------------
 # Main pipeline — ALPHA DIVERSITY MODE (Shannon, Simpson, Chao1)
 # ---------------------------------------------------------------------------
-def generate_alpha_diversity_violins(data_path, metadata_path, category_col,
-                                      sample_id_col, rank_level, organism_name,
-                                      output_base, fmt, no_table=False):
+def generate_alpha_diversity_plots(data_path, metadata_path, category_col,
+                                   sample_id_col, rank_level, organism_name,
+                                   output_base, fmt, plot_type="violin", no_table=False):
     """
-    Generates a 1×3 multi-panel violin figure for three alpha diversity indices:
-      - Shannon
-      - Simpson
-      - Chao1
-
-    Violins are grouped by a metadata category column. CLD letters are computed
-    via Kruskal-Wallis + pairwise Mann-Whitney U (Bonferroni correction) and
-    placed above each violin. 
-    Optionally exports a per-sample summary table (.xlsx).
+    Generates a 1×3 multi-panel figure for three alpha diversity indices.
+    Allows for violin or boxplot based on user input.
     """
     print(f"[*] Computing alpha diversity indices (Shannon, Simpson, Chao1) → {output_base}")
 
@@ -588,7 +593,7 @@ def generate_alpha_diversity_violins(data_path, metadata_path, category_col,
     group_order = sorted(alpha_df['Group'].unique())
     palette_map = {g: COLORS[i % len(COLORS)] for i, g in enumerate(group_order)}
 
-    # 5. Three-panel violin figure (Updated metric specs for stripped-down labels)
+    # 5. Three-panel figure
     metric_specs = [
         ('Shannon', "Shannon"),
         ('Simpson', 'Simpson'),
@@ -602,19 +607,32 @@ def generate_alpha_diversity_violins(data_path, metadata_path, category_col,
         data_by_group = [alpha_df[alpha_df['Group'] == g][metric_key].dropna().values
                          for g in group_order]
 
-        # Violin bodies — only groups with > 1 observation
+        # Plot bodies — only groups with > 1 observation
         valid_pos  = [i for i, d in enumerate(data_by_group) if len(d) > 1]
         valid_data = [data_by_group[i] for i in valid_pos]
 
         if valid_data:
-            parts = ax.violinplot(valid_data, positions=valid_pos,
-                                  widths=0.65, showmeans=False,
-                                  showmedians=False, showextrema=False)
-            for idx, body in zip(valid_pos, parts['bodies']):
-                body.set_facecolor(palette_map[group_order[idx]])
-                body.set_edgecolor('black')
-                body.set_linewidth(1.1)
-                body.set_alpha(0.60)
+            if plot_type == "violin":
+                parts = ax.violinplot(valid_data, positions=valid_pos,
+                                      widths=0.65, showmeans=False,
+                                      showmedians=False, showextrema=False)
+                for idx, body in zip(valid_pos, parts['bodies']):
+                    body.set_facecolor(palette_map[group_order[idx]])
+                    body.set_edgecolor('black')
+                    body.set_linewidth(1.1)
+                    body.set_alpha(0.60)
+            elif plot_type == "boxplot":
+                bplot = ax.boxplot(valid_data, positions=valid_pos,
+                                   widths=0.60, patch_artist=True,
+                                   medianprops=dict(color="black", linewidth=1.2),
+                                   flierprops=dict(marker="o", markerfacecolor="black", markersize=4, alpha=0.5))
+                for idx, patch in zip(valid_pos, bplot['boxes']):
+                    patch.set_facecolor(palette_map[group_order[idx]])
+                    patch.set_edgecolor('black')
+                    patch.set_linewidth(1.1)
+                    patch.set_alpha(0.60)
+                for element in ['whiskers', 'caps']:
+                    plt.setp(bplot[element], color="black", linewidth=1.1)
 
         # Mean ± SE point + error bar
         for i, g in enumerate(group_order):
@@ -629,9 +647,6 @@ def generate_alpha_diversity_violins(data_path, metadata_path, category_col,
             ax.plot(i, mean_val, 'o', color='black',
                     markersize=4.5, zorder=5,
                     markeredgecolor='black', markeredgewidth=0.7)
-
-        # Removed title block as requested 
-        # (Titles and KW p-values are no longer rendered on top of individual plots)
 
         # CLD letters (Kruskal-Wallis + Mann-Whitney Bonferroni)
         cld_input = alpha_df[['Group', metric_key]].rename(columns={metric_key: 'Value'})
@@ -664,7 +679,7 @@ def generate_alpha_diversity_violins(data_path, metadata_path, category_col,
         ax.set_xlabel(category_col, fontsize=11, fontweight='bold')
         ax.set_ylabel(metric_label,  fontsize=11, fontweight='bold')
 
-    # 6. Shared legend (right side, moved nearer to the top via bbox_to_anchor adjustment)
+    # 6. Shared legend
     legend_patches = [
         mpatches.Patch(facecolor=palette_map[g], edgecolor='black',
                        linewidth=0.7, alpha=0.7, label=g)
@@ -683,7 +698,7 @@ def generate_alpha_diversity_violins(data_path, metadata_path, category_col,
     plt.close(fig)
     print(f"    [✓] Alpha diversity plot saved: {output_base}.{fmt}")
 
-    # 7. Summary table — Sample | Group | Shannon | Simpson | Chao1
+    # 7. Summary table
     if not no_table:
         table_df = (
             alpha_df[['Sample', 'Group', 'Shannon', 'Simpson', 'Chao1']]
@@ -692,15 +707,16 @@ def generate_alpha_diversity_violins(data_path, metadata_path, category_col,
             .reset_index(drop=True)
         )
         export_summary_table(table_df, output_base, sheet_name='Alpha_Diversity')
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=(
-            "Violin Plot Generator — two modes:\n"
-            "  taxa  : per-taxon relative abundance violins (ANOVA + Tukey HSD CLD)\n"
-            "  alpha : Shannon H', Simpson (1-D), Chao1 violins (KW + Mann-Whitney CLD)"
+            "Plot Generator — two modes:\n"
+            "  taxa  : per-taxon relative abundance plots (ANOVA + Tukey HSD CLD)\n"
+            "  alpha : Shannon H', Simpson (1-D), Chao1 plots (KW + Mann-Whitney CLD)"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -725,9 +741,11 @@ if __name__ == "__main__":
     parser.add_argument("--mode", choices=["taxa", "alpha"], default="taxa",
                         help=(
                             "Operational mode: "
-                            "'taxa' = per-taxon relative abundance violin plots (ANOVA/Tukey); "
-                            "'alpha' = Shannon, Simpson, Chao1 diversity index violins (KW/Mann-Whitney)."
+                            "'taxa' = per-taxon relative abundance plots (ANOVA/Tukey); "
+                            "'alpha' = Shannon, Simpson, Chao1 diversity index plots (KW/Mann-Whitney)."
                         ))
+    parser.add_argument("--plot_type", choices=["violin", "boxplot"], default="violin",
+                        help="Choose the type of plot to generate: 'violin' (default) or 'boxplot'.")
     parser.add_argument("--no_table", action="store_true",
                         help="Skip exporting the summary table (.xlsx).")
 
@@ -741,9 +759,9 @@ if __name__ == "__main__":
 
     if args.mode == "taxa":
         base_name   = (args.output if args.output
-                       else f"{safe_name}_{args.rank}_{args.threshold}_Violin_ANOVA")
+                       else f"{safe_name}_{args.rank}_{args.threshold}_{args.plot_type.capitalize()}_ANOVA")
         output_base = os.path.join(OUTPUT_DIR, base_name)
-        generate_taxa_violin_plots(
+        generate_taxa_plots(
             data_path     = args.data,
             metadata_path = args.metadata,
             category_col  = args.category,
@@ -753,14 +771,15 @@ if __name__ == "__main__":
             organism_name = args.organism,
             output_base   = output_base,
             fmt           = args.format.lower(),
+            plot_type     = args.plot_type,
             no_table      = args.no_table,
         )
 
     elif args.mode == "alpha":
         base_name   = (args.output if args.output
-                       else f"{safe_name}_{args.rank}_Alpha_Diversity")
+                       else f"{safe_name}_{args.rank}_Alpha_Diversity_{args.plot_type.capitalize()}")
         output_base = os.path.join(OUTPUT_DIR, base_name)
-        generate_alpha_diversity_violins(
+        generate_alpha_diversity_plots(
             data_path     = args.data,
             metadata_path = args.metadata,
             category_col  = args.category,
@@ -769,5 +788,6 @@ if __name__ == "__main__":
             organism_name = args.organism,
             output_base   = output_base,
             fmt           = args.format.lower(),
+            plot_type     = args.plot_type,
             no_table      = args.no_table,
         )

@@ -249,7 +249,7 @@ def generate_global_pie_chart(df_rank, rank_level, threshold, output_base, fmt,
     # Gráfico base con sombra, sin etiquetas internas ni leyenda
     wedges, texts = ax.pie(
         plot_data, labels=None, startangle=140, 
-        colors=COLORS[:len(plot_data)], explode=explode, shadow=True,
+        colors=COLORS[:len(plot_data)], explode=explode, shadow=False,
         wedgeprops=dict(edgecolor='white', linewidth=1.0)
     )
 
@@ -424,11 +424,21 @@ def generate_pcoa_plot(df_rank, rank_level, metadata_path, category_col, sample_
 
         meta_df[sample_id_col] = meta_df[sample_id_col].astype(str).str.strip().str.lower()
         meta_map = dict(zip(meta_df[sample_id_col], meta_df[category_col].astype(str)))
+        meta_keys = list(meta_map.keys())
 
         groups = []
         for name in sample_names:
             clean_name = name.split('_')[0].strip().lower()
             mapped_val = meta_map.get(clean_name, "Unknown")
+
+            # Fallback: longest metadata key that is a prefix of clean_name
+            if mapped_val in ("Unknown", "nan"):
+                candidates = [k for k in meta_keys if clean_name.startswith(k)]
+                if candidates:
+                    best_key   = max(candidates, key=len)
+                    mapped_val = meta_map[best_key]
+                    print(f"    [~] Prefix match: '{name}' → '{best_key}' (group: {mapped_val})")
+
             if mapped_val == 'nan':
                 mapped_val = "Unknown"
             if mapped_val == "Unknown":
@@ -535,7 +545,7 @@ def generate_pcoa_plot(df_rank, rank_level, metadata_path, category_col, sample_
     leg = ax.legend(title=category_col if category_col else "Group",
                     fontsize=12, title_fontproperties={'weight': 'bold', 'size': 13},
                     bbox_to_anchor=(1.03, 0.5), loc='center left', frameon=True,
-                    facecolor='white', edgecolor='white', shadow=True)
+                    facecolor='white', edgecolor='white', shadow=False)
     leg.get_title().set_color('#333333')
 
     # --- ANOSIM + PERMANOVA annotation box (upper-left corner) ---
@@ -543,7 +553,7 @@ def generate_pcoa_plot(df_rank, rank_level, metadata_path, category_col, sample_
         return f"{v:.{d}f}" if (v is not None and not np.isnan(v)) else "N/A"
 
     stats_text = (
-        f"ANOSIM     R = {_fmt(anosim_r_val)}   p = {_fmt(anosim_p_val)}\n"
+        f"ANOSIM  R = {_fmt(anosim_r_val)}   |   "
         f"PERMANOVA  F = {_fmt(perm_f_val, 2)}   p = {_fmt(perm_p_val)}"
     )
     ax.text(0.03, 0.97, stats_text,
