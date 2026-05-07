@@ -56,6 +56,9 @@ def main():
     parser.add_argument("-m", "--metadata", required=True, help="Path to metadata file (Excel or CSV)")
     parser.add_argument("-x", "--treatment", required=True, help="X-axis group column name (e.g. Type)")
     parser.add_argument("-y", "--morphology", required=True, nargs='+', help="List of numerical columns to plot together")
+    parser.add_argument("--normalize", choices=["yes", "no"], default="yes",
+                        help="Z-score normalize columns before plotting (default: yes). "
+                             "Use 'no' to plot raw values with original units.")
     args = parser.parse_args()
 
     print(f"[*] Loading metadata from: {args.metadata}")
@@ -76,15 +79,21 @@ def main():
     df[args.treatment] = df[args.treatment].astype(str)
 
     # Clean and normalize numerical columns
-    print("[*] Normalizing morphology columns (Z-score scaling)...")
-    normalized_cols = []
+    normalize = args.normalize == "yes"
+    if normalize:
+        print("[*] Normalizing morphology columns (Z-score scaling)...")
+    else:
+        print("[*] Skipping normalization — plotting raw values...")
+    plot_cols = []
     for col in args.morphology:
         df[col] = pd.to_numeric(df[col], errors='coerce')
-        
-        # Z-score normalization: (x - mean) / std
-        norm_col_name = f"{col}_Zscore"
-        df[norm_col_name] = (df[col] - df[col].mean()) / df[col].std()
-        normalized_cols.append(norm_col_name)
+        if normalize:
+            norm_col_name = f"{col}_Zscore"
+            df[norm_col_name] = (df[col] - df[col].mean()) / df[col].std()
+            plot_cols.append(norm_col_name)
+        else:
+            plot_cols.append(col)
+    normalized_cols = plot_cols
 
     # Melt DataFrame to long format for Seaborn grouped boxplot compatibility
     df_melted = df.melt(id_vars=[args.treatment], 
@@ -108,83 +117,112 @@ def main():
 
     # Plot configuration (publication style)
     sns.set_theme(style="ticks")
-    plt.figure(figsize=(12, 6))
-
-    # 1. Draw Grouped Boxplot
     dodge_width = 0.8
-    try:
-        # For Seaborn >= 0.13.0 (supports 'gap' parameter to separate hue boxes)
-        ax = sns.boxplot(
-            data=df_melted, 
-            x='Morphology_Trait', 
-            y='Normalized_Value', 
-            hue=args.treatment,
-            hue_order=treatments,
-            palette="Set2", 
-            width=dodge_width,
-            gap=0.15, # <--- Adds separation between boxes of the same category
-            linewidth=1.5,
-            flierprops=dict(marker='o', markersize=5, alpha=0.5)
-        )
-    except TypeError:
-        # Fallback for older Seaborn versions (reduces width to create space)
-        ax = sns.boxplot(
-            data=df_melted, 
-            x='Morphology_Trait', 
-            y='Normalized_Value', 
-            hue=args.treatment,
-            hue_order=treatments,
-            palette="Set2", 
-            width=0.6, 
-            linewidth=1.5,
-            flierprops=dict(marker='o', markersize=5, alpha=0.5)
-        )
 
-    # 2. Add significance letters above each corresponding box
-    # Calculate offset positions for dodged boxes (Seaborn default logic)
-    offsets = np.linspace(-dodge_width/2 + dodge_width/(2*n_treatments), 
-                           dodge_width/2 - dodge_width/(2*n_treatments), 
-                           n_treatments)
+    if normalize:
+        # --- NORMALIZED MODE: single figure, all traits on a shared Z-score Y-axis ---
+        fig, ax_single = plt.subplots(figsize=(12, 6))
 
-    # Determine a uniform Y offset for text placement based on global data range
-    y_max_global = df_melted['Normalized_Value'].max()
-    y_range = y_max_global - df_melted['Normalized_Value'].min()
-    text_y_offset = y_range * 0.05
+        try:
+            ax = sns.boxplot(
+                data=df_melted, x='Morphology_Trait', y='Normalized_Value',
+                hue=args.treatment, hue_order=treatments,
+                palette="Set2", width=dodge_width, gap=0.15,
+                linewidth=1.5, flierprops=dict(marker='o', markersize=5, alpha=0.5),
+                ax=ax_single
+            )
+        except TypeError:
+            ax = sns.boxplot(
+                data=df_melted, x='Morphology_Trait', y='Normalized_Value',
+                hue=args.treatment, hue_order=treatments,
+                palette="Set2", width=0.6, linewidth=1.5,
+                flierprops=dict(marker='o', markersize=5, alpha=0.5),
+                ax=ax_single
+            )
 
-    # Iterate through traits and treatments to place CLD text
-    for i, trait in enumerate(traits):
-        trait_df = df_melted[df_melted['Morphology_Trait'] == trait]
-        for j, treatment in enumerate(treatments):
-            group_data = trait_df[trait_df[args.treatment] == treatment]['Normalized_Value']
-            if not group_data.empty:
-                y_max_group = group_data.max()
-                letra = letters_dict[trait].get(treatment, "")
-                
-                # Position calculation: base x-tick (i) + dodge offset (offsets[j])
-                x_pos = i + offsets[j]
-                y_pos = y_max_group + text_y_offset
-                
-                ax.text(x_pos, y_pos, letra, ha='center', va='bottom', 
-                        fontsize=10, fontweight='bold', color='black')
+        offsets = np.linspace(-dodge_width/2 + dodge_width/(2*n_treatments),
+                               dodge_width/2 - dodge_width/(2*n_treatments),
+                               n_treatments)
+        y_max_global  = df_melted['Normalized_Value'].max()
+        y_range        = y_max_global - df_melted['Normalized_Value'].min()
+        text_y_offset  = y_range * 0.05
 
-    # Formatting axes limits to prevent cut-off text
-    ax.set_ylim(bottom=df_melted['Normalized_Value'].min() - text_y_offset, 
-                top=y_max_global + (text_y_offset * 3))
+        for i, trait in enumerate(traits):
+            trait_df = df_melted[df_melted['Morphology_Trait'] == trait]
+            for j, treatment in enumerate(treatments):
+                group_data = trait_df[trait_df[args.treatment] == treatment]['Normalized_Value']
+                if not group_data.empty:
+                    x_pos = i + offsets[j]
+                    y_pos = group_data.max() + text_y_offset
+                    ax.text(x_pos, y_pos, letters_dict[trait].get(treatment, ""),
+                            ha='center', va='bottom', fontsize=10, fontweight='bold', color='black')
 
-    # Clean trait names for the X-axis labels (remove the "_Zscore" suffix)
-    clean_labels = [col.replace('_Zscore', '') for col in traits]
-    ax.set_xticklabels(clean_labels, fontweight='bold')
-    
-    # Setup Minimalist Labels (Removed Title and X-axis label as requested)
-    plt.xlabel("", fontsize=12, fontweight='bold')
-    plt.ylabel("Z-score", fontsize=12, fontweight='bold')
-    
-    # Legend formatting outside the plot
-    plt.legend(title=args.treatment, title_fontsize='11', fontsize='10', 
-               bbox_to_anchor=(1.02, 1), loc='upper left', frameon=False)
+        ax.set_ylim(bottom=df_melted['Normalized_Value'].min() - text_y_offset,
+                    top=y_max_global + (text_y_offset * 3))
+        ax.set_xticklabels([col.replace('_Zscore', '') for col in traits], fontweight='bold')
+        plt.xlabel("", fontsize=12, fontweight='bold')
+        plt.ylabel("Z-score", fontsize=12, fontweight='bold')
+        plt.legend(title=args.treatment, title_fontsize='11', fontsize='10',
+                   bbox_to_anchor=(1.02, 1), loc='upper left', frameon=False)
+        sns.despine()
+        plt.tight_layout()
 
-    sns.despine() # Clean borders
-    plt.tight_layout()
+    else:
+        # --- RAW MODE: one subplot per variable, each with its own Y-axis scale ---
+        n_traits  = len(traits)
+        fig, axes = plt.subplots(1, n_traits, figsize=(5 * n_traits, 6), sharey=False)
+        if n_traits == 1:
+            axes = [axes]
+
+        for idx, (trait, col_name) in enumerate(zip(traits, args.morphology)):
+            ax = axes[idx]
+            trait_df = df_melted[df_melted['Morphology_Trait'] == trait].copy()
+
+            try:
+                sns.boxplot(
+                    data=trait_df, x=args.treatment, y='Normalized_Value',
+                    order=treatments, palette="Set2", width=dodge_width, gap=0.15,
+                    linewidth=1.5, flierprops=dict(marker='o', markersize=5, alpha=0.5),
+                    ax=ax
+                )
+            except TypeError:
+                sns.boxplot(
+                    data=trait_df, x=args.treatment, y='Normalized_Value',
+                    order=treatments, palette="Set2", width=0.6, linewidth=1.5,
+                    flierprops=dict(marker='o', markersize=5, alpha=0.5),
+                    ax=ax
+                )
+
+            # CLD letters — each subplot has its own Y scale
+            y_max_local   = trait_df['Normalized_Value'].max()
+            y_range_local = y_max_local - trait_df['Normalized_Value'].min()
+            text_y_offset = y_range_local * 0.05
+
+            for j, treatment in enumerate(treatments):
+                group_data = trait_df[trait_df[args.treatment] == treatment]['Normalized_Value']
+                if not group_data.empty:
+                    ax.text(j, group_data.max() + text_y_offset,
+                            letters_dict[trait].get(treatment, ""),
+                            ha='center', va='bottom', fontsize=10, fontweight='bold', color='black')
+
+            ax.set_ylim(bottom=trait_df['Normalized_Value'].min() - text_y_offset,
+                        top=y_max_local + (text_y_offset * 3))
+            ax.set_title(col_name, fontsize=12, fontweight='bold')
+            ax.set_xlabel(args.treatment, fontsize=11, fontweight='bold')
+            ax.set_ylabel(col_name, fontsize=11, fontweight='bold')
+            ax.set_xticklabels(treatments, rotation=45, ha='right', fontweight='bold')
+
+            # Only keep legend on the last subplot
+            if idx == n_traits - 1:
+                handles = [plt.Rectangle((0, 0), 1, 1,
+                           fc=sns.color_palette("Set2")[k]) for k in range(len(treatments))]
+                ax.legend(handles, treatments, title=args.treatment,
+                          title_fontsize='11', fontsize='10',
+                          bbox_to_anchor=(1.02, 1), loc='upper left', frameon=False)
+
+            sns.despine(ax=ax)
+
+        plt.tight_layout()
 
     # 3. Dynamic output folder and filename generation
     # Extract only the first word/acronym of each morphology column to keep filenames readable

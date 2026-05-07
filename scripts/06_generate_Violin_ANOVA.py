@@ -388,7 +388,7 @@ def draw_strip_headers(fig, axes_flat, taxa_list):
 # ---------------------------------------------------------------------------
 def generate_taxa_plots(data_path, metadata_path, category_col,
                         sample_id_col, rank_level, threshold,
-                        organism_name, output_base, fmt, plot_type="violin", no_table=False):
+                        organism_name, output_base, fmt, plot_type="violin", no_table=False, normalize=True):
     """
     Generates per-taxon violin/box plots (ANOVA + Tukey HSD CLD) in ggplot2 facet_wrap style.
     Optionally exports a long-format abundance summary table (.xlsx).
@@ -406,12 +406,20 @@ def generate_taxa_plots(data_path, metadata_path, category_col,
     df_counts   = df_rank[sample_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
 
     # 2. Relative abundance
-    rel_abund          = df_counts.div(df_counts.sum(axis=0), axis=1) * 100
+    if normalize:
+        rel_abund = df_counts.div(df_counts.sum(axis=0), axis=1) * 100
+        y_axis_label = f"{organism_name} Rel. Abundance (%)"
+    else:
+        rel_abund = df_counts.copy()
+        y_axis_label = f"{organism_name} Raw Counts"
     rel_abund["Taxon"] = df_rank["Name"].values
 
     # 3. Threshold filter
     mean_rel    = rel_abund[sample_cols].mean(axis=1)
-    top_taxa_df = rel_abund[mean_rel >= threshold * 100]
+    if normalize:
+        top_taxa_df = rel_abund[mean_rel >= threshold * 100]
+    else:
+        top_taxa_df = rel_abund[mean_rel > 0]
     if top_taxa_df.empty:
         print(f"[!] No taxa passed the {threshold*100:.2f}% threshold.")
         return
@@ -493,7 +501,7 @@ def generate_taxa_plots(data_path, metadata_path, category_col,
 
     # 10. Shared axis labels
     fig.supxlabel(category_col, fontsize=12, fontweight="bold", y=0.01, va="bottom")
-    fig.supylabel(f"{organism_name} Rel. Abundance (%)",
+    fig.supylabel(y_axis_label,
                   fontsize=11, fontweight="bold", x=0.01, va="center")
 
     # 11. Right-side vertical legend
@@ -748,6 +756,9 @@ if __name__ == "__main__":
                         help="Choose the type of plot to generate: 'violin' (default) or 'boxplot'.")
     parser.add_argument("--no_table", action="store_true",
                         help="Skip exporting the summary table (.xlsx).")
+    parser.add_argument("--normalize", choices=["yes", "no"], default="yes",
+                        help="Normalize taxa counts to relative abundance %% (default: yes). "
+                             "Use 'no' to plot raw counts with each taxon on its own scale.")
 
     args = parser.parse_args()
 
@@ -773,6 +784,7 @@ if __name__ == "__main__":
             fmt           = args.format.lower(),
             plot_type     = args.plot_type,
             no_table      = args.no_table,
+            normalize     = args.normalize == "yes",
         )
 
     elif args.mode == "alpha":
