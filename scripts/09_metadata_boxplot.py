@@ -59,6 +59,8 @@ def main():
     parser.add_argument("--normalize", choices=["yes", "no"], default="yes",
                         help="Z-score normalize columns before plotting (default: yes). "
                              "Use 'no' to plot raw values with original units.")
+    parser.add_argument("--no_legend", action="store_true",
+                        help="Hide the color legend from the plot.")
     args = parser.parse_args()
 
     print(f"[*] Loading metadata from: {args.metadata}")
@@ -162,8 +164,11 @@ def main():
         ax.set_xticklabels([col.replace('_Zscore', '') for col in traits], fontweight='bold')
         plt.xlabel("", fontsize=12, fontweight='bold')
         plt.ylabel("Z-score", fontsize=12, fontweight='bold')
-        plt.legend(title=args.treatment, title_fontsize='11', fontsize='10',
-                   bbox_to_anchor=(1.02, 1), loc='upper left', frameon=False)
+        if not args.no_legend:
+            plt.legend(title=args.treatment, title_fontsize='11', fontsize='10',
+                       bbox_to_anchor=(1.02, 1), loc='upper left', frameon=False)
+        else:
+            plt.legend().remove()
         sns.despine()
         plt.tight_layout()
 
@@ -181,6 +186,7 @@ def main():
             try:
                 sns.boxplot(
                     data=trait_df, x=args.treatment, y='Normalized_Value',
+                    hue=args.treatment, legend=False,
                     order=treatments, palette="Set2", width=dodge_width, gap=0.15,
                     linewidth=1.5, flierprops=dict(marker='o', markersize=5, alpha=0.5),
                     ax=ax
@@ -188,6 +194,7 @@ def main():
             except TypeError:
                 sns.boxplot(
                     data=trait_df, x=args.treatment, y='Normalized_Value',
+                    hue=args.treatment, legend=False,
                     order=treatments, palette="Set2", width=0.6, linewidth=1.5,
                     flierprops=dict(marker='o', markersize=5, alpha=0.5),
                     ax=ax
@@ -208,19 +215,22 @@ def main():
             ax.set_ylim(bottom=trait_df['Normalized_Value'].min() - text_y_offset,
                         top=y_max_local + (text_y_offset * 3))
             ax.set_title(col_name, fontsize=12, fontweight='bold')
-            ax.set_xlabel(args.treatment, fontsize=11, fontweight='bold')
+            ax.set_xlabel("")
             ax.set_ylabel(col_name, fontsize=11, fontweight='bold')
+            ax.set_xticks(range(len(treatments)))
             ax.set_xticklabels(treatments, rotation=45, ha='right', fontweight='bold')
 
-            # Only keep legend on the last subplot
-            if idx == n_traits - 1:
-                handles = [plt.Rectangle((0, 0), 1, 1,
-                           fc=sns.color_palette("Set2")[k]) for k in range(len(treatments))]
-                ax.legend(handles, treatments, title=args.treatment,
-                          title_fontsize='11', fontsize='10',
-                          bbox_to_anchor=(1.02, 1), loc='upper left', frameon=False)
-
             sns.despine(ax=ax)
+
+        # Single shared X-axis label across all subplots
+        fig.supxlabel(args.treatment, fontsize=12, fontweight='bold')
+
+        # Original legend style on the last subplot
+        if not args.no_legend:
+            plt.legend(title=args.treatment, title_fontsize='11', fontsize='10',
+                       bbox_to_anchor=(1.02, 1), loc='upper left', frameon=False)
+        else:
+            plt.legend().remove()
 
         plt.tight_layout()
 
