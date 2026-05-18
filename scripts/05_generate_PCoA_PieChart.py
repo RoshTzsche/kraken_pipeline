@@ -243,31 +243,19 @@ def generate_global_pie_chart(df_rank, rank_level, threshold, output_base, fmt,
 
     fig, ax = plt.subplots(figsize=(16, 9))
     
-    # Efecto 3D: Añadir un pequeño 'explode' (separación) a cada sector y proyectar sombra
     explode = [0.03] * len(plot_data)
 
-    # Gráfico base con sombra, sin etiquetas internas ni leyenda
     wedges, texts = ax.pie(
         plot_data, labels=None, startangle=140, 
         colors=COLORS[:len(plot_data)], explode=explode, shadow=False,
         wedgeprops=dict(edgecolor='white', linewidth=1.0)
     )
 
-    # -----------------------------------------------------------------------
-    # Collision-aware callout label system
-    # Strategy:
-    #   1. Compute ideal (x, y) anchor on the wedge midpoint radius.
-    #   2. Split labels into LEFT (x<0) and RIGHT (x>=0) pools.
-    #   3. Within each pool sort by ideal y, then push labels apart
-    #      until no two consecutive labels are closer than MIN_SEP.
-    #   4. Draw a two-segment leader line: wedge-edge → bend point → label.
-    # -----------------------------------------------------------------------
-    LABEL_R   = 1.15   # radius of the bend / intermediate waypoint
-    TEXT_X    = 1.55   # horizontal distance of text from centre
-    MIN_SEP   = 0.13   # minimum vertical gap between adjacent labels (axes units)
+    LABEL_R   = 1.15
+    TEXT_X    = 1.55
+    MIN_SEP   = 0.13
     FONT_SIZE = 11
 
-    # Build raw label info
     label_info = []
     for i, wedge in enumerate(wedges):
         ang      = (wedge.theta2 - wedge.theta1) / 2.0 + wedge.theta1
@@ -278,8 +266,8 @@ def generate_global_pie_chart(df_rank, rank_level, threshold, output_base, fmt,
         label_info.append({
             'wedge':   wedge,
             'ang':     ang,
-            'xi':      xi,          # unit-circle anchor x
-            'yi':      yi,          # unit-circle anchor y
+            'xi':      xi,
+            'yi':      yi,
             'bend_x':  LABEL_R * xi,
             'bend_y':  LABEL_R * yi,
             'side':    'right' if xi >= 0 else 'left',
@@ -287,17 +275,14 @@ def generate_global_pie_chart(df_rank, rank_level, threshold, output_base, fmt,
         })
 
     def _resolve_collisions(items, min_sep):
-        """Push labels apart (upward/downward) until no overlap remains."""
         if not items:
             return items
-        # Sort by ideal y
         items = sorted(items, key=lambda d: d['bend_y'])
         if len(items) == 1:
             items[0]['label_y'] = items[0]['bend_y']
             return items
         placed = [d['bend_y'] for d in items]
 
-        # Iterative spreading — up to 50 passes
         for _ in range(50):
             moved = False
             for k in range(1, len(placed)):
@@ -322,14 +307,12 @@ def generate_global_pie_chart(df_rank, rank_level, threshold, output_base, fmt,
         text_x  = TEXT_X  if d['side'] == 'right' else -TEXT_X
         label_y = d['label_y']
 
-        # Single two-segment leader: wedge-edge → bend-point → label
         ax.plot(
             [d['xi'],     d['bend_x'], text_x],
             [d['yi'],     d['bend_y'], label_y],
             color='#444444', linewidth=0.9, zorder=4, solid_capstyle='round'
         )
 
-        # Text only — no arrow
         ax.text(
             text_x, label_y, d['text'],
             ha=ha, va='center',
@@ -344,7 +327,6 @@ def generate_global_pie_chart(df_rank, rank_level, threshold, output_base, fmt,
     export_topological_projection(fig, output_base, fmt, pad_inches=0.5)
     plt.close(fig)
 
-    # Pie chart summary table — Taxon | Mean_Rel_Abundance_pct
     if not no_table:
         table_df = pd.DataFrame({
             'Taxon':                  plot_data.index,
@@ -475,12 +457,12 @@ def generate_pcoa_plot(df_rank, rank_level, metadata_path, category_col, sample_
     eigenvectors = eigenvectors[:, idx]
     eigenvalues[eigenvalues < 0] = 0
 
-    coords             = eigenvectors[:, :2] * np.sqrt(eigenvalues[:2])
-    variance_explained = (eigenvalues / np.sum(eigenvalues)) * 100
-    pc1_var, pc2_var   = variance_explained[0], variance_explained[1]
+    coords              = eigenvectors[:, :2] * np.sqrt(eigenvalues[:2])
+    variance_explained  = (eigenvalues / np.sum(eigenvalues)) * 100
+    pco1_var, pco2_var  = variance_explained[0], variance_explained[1]  # PCo1/PCo2 variance
 
     df_pcoa = pd.DataFrame({
-        'PC1': coords[:, 0], 'PC2': coords[:, 1],
+        'PCo1': coords[:, 0], 'PCo2': coords[:, 1],  # Renamed from PC1/PC2 to PCo1/PCo2
         'Group': groups, 'Sample': sample_names
     })
 
@@ -499,16 +481,14 @@ def generate_pcoa_plot(df_rank, rank_level, metadata_path, category_col, sample_
     # --- 'keep' mode: unknowns pass through as-is and are plotted as 'Unknown' group ---
 
     # --- Statistical Analysis: ANOSIM + PERMANOVA ---
-    # Extract distance sub-matrix aligned with the final (post-filter) sample set.
-    # This correctly handles all three unknown_mode strategies.
     _stats_samples  = df_pcoa['Sample'].tolist()
     _stats_groups   = df_pcoa['Group'].tolist()
     _sample_to_idx  = {s: i for i, s in enumerate(sample_names)}
     _pcoa_idx       = [_sample_to_idx[s] for s in _stats_samples if s in _sample_to_idx]
     _dist_stats     = dist_matrix[np.ix_(_pcoa_idx, _pcoa_idx)]
 
-    anosim_r_val, anosim_p_val          = compute_anosim(_dist_stats, _stats_groups)
-    perm_f_val,   perm_r2_val, perm_p_val = compute_permanova(_dist_stats, _stats_groups)
+    anosim_r_val, anosim_p_val             = compute_anosim(_dist_stats, _stats_groups)
+    perm_f_val,   perm_r2_val, perm_p_val  = compute_permanova(_dist_stats, _stats_groups)
 
     # --- Plot ---
     unique_groups = df_pcoa['Group'].unique()
@@ -521,23 +501,24 @@ def generate_pcoa_plot(df_rank, rank_level, metadata_path, category_col, sample_
         subset = df_pcoa[df_pcoa['Group'] == group]
         color  = COLORS[i % len(COLORS)]
 
-        ax.scatter(subset['PC1'], subset['PC2'],
+        ax.scatter(subset['PCo1'], subset['PCo2'],
                    s=180, alpha=0.9, label=group,
                    color=color, edgecolors='white', linewidth=2, zorder=3)
 
         if len(subset) >= 3 and group != "Unknown":
-            confidence_ellipse(subset['PC1'].values, subset['PC2'].values, ax,
+            confidence_ellipse(subset['PCo1'].values, subset['PCo2'].values, ax,
                                n_std=2.447, edgecolor=color, facecolor=color,
                                alpha=0.15, linewidth=2, zorder=2)
-            confidence_ellipse(subset['PC1'].values, subset['PC2'].values, ax,
+            confidence_ellipse(subset['PCo1'].values, subset['PCo2'].values, ax,
                                n_std=2.447, edgecolor=color, facecolor='none',
                                linestyle='--', alpha=0.8, linewidth=1.5, zorder=2)
 
     ax.axhline(0, color='black', linestyle=':', linewidth=1.2, alpha=0.6, zorder=1)
     ax.axvline(0, color='black', linestyle=':', linewidth=1.2, alpha=0.6, zorder=1)
 
-    ax.set_xlabel(f"PC1 ({pc1_var:.1f}%)", fontsize=14, fontweight='bold', color='#333333')
-    ax.set_ylabel(f"PC2 ({pc2_var:.1f}%)", fontsize=14, fontweight='bold', color='#333333')
+    # Corrected axis labels: PCo1 / PCo2 (Principal Coordinates, not Principal Components)
+    ax.set_xlabel(f"PCo1 ({pco1_var:.1f}%)", fontsize=14, fontweight='bold', color='#333333')
+    ax.set_ylabel(f"PCo2 ({pco2_var:.1f}%)", fontsize=14, fontweight='bold', color='#333333')
 
     for spine in ax.spines.values():
         spine.set_visible(False)
@@ -569,7 +550,7 @@ def generate_pcoa_plot(df_rank, rank_level, metadata_path, category_col, sample_
 
     # PCoA summary table — Sheet 1: coordinates + groups; Sheet 2: Bray-Curtis matrix; Sheet 3: Pairwise ANOSIM
     if not no_table:
-        coords_df = df_pcoa[['Sample', 'Group', 'PC1', 'PC2']].round(6).reset_index(drop=True)
+        coords_df = df_pcoa[['Sample', 'Group', 'PCo1', 'PCo2']].round(6).reset_index(drop=True)
 
         dist_df = pd.DataFrame(
             _dist_stats,
@@ -624,7 +605,6 @@ if __name__ == "__main__":
     parser.add_argument('--label_col', type=str, default=None,
                         help='Column to use as pie chart slice labels (e.g. "Name", "Scientific Name"). '
                              'Defaults to "Name" if present, then "Scientific Name", then row index.')
-
     parser.add_argument('--no_table', action='store_true',
                         help='Skip exporting summary tables (.xlsx).')
 
