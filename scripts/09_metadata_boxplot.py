@@ -1,256 +1,433 @@
+"""
+08_generate_lefse.py
+====================
+LEfSe — Linear Discriminant Analysis Effect Size
+Anderson 2001 / Segata et al. 2011 (PLoS Comput Biol)
+
+Pipeline-compatible script for the Kraken2 taxonomic classification output.
+Now features automated combinatorial pairwise execution.
+"""
+
 import argparse
 import os
-import pandas as pd
+import warnings
+from itertools import combinations
+
 import numpy as np
-import seaborn as sns
+import pandas as pd
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from scipy import stats
-from statsmodels.stats.multicomp import pairwise_tukeyhsd
+import matplotlib.patches as mpatches
+from matplotlib.backends.backend_pdf import PdfPages
+from scipy import stats as sp_stats
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from tqdm import tqdm
 
-def get_cld_letters(df, val_col, group_col):
-    """Calculates Tukey's HSD Compact Letter Display (CLD) for grouping significance."""
-    # Group by treatment and calculate mean to sort groups from highest to lowest
-    mean_series = df.groupby(group_col)[val_col].mean().sort_values(ascending=False)
-    groups = mean_series.index.tolist()
+warnings.filterwarnings('ignore')
 
-    # Extract data arrays per group
-    group_data = [df[df[group_col] == g][val_col].dropna().values for g in groups]
-    
-    # Check if there's enough data to perform statistics
-    if len(groups) < 2 or df[val_col].nunique() <= 1:
-        return {g: "a" for g in groups}
+# ---------------------------------------------------------------------------
+# Shared palette
+# ---------------------------------------------------------------------------
+COLORS = [
+    "#4E79A7", "#F28E2B", "#E15759", "#76B7B2", "#59A14F",
+    "#EDC948", "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC",
+    "#b988d5", "#cbd588", "#88a05b", "#ffe156", "#6b8ba4", "#fda47d",
+    "#8e5634", "#d44645", "#5d9ca3", "#63b7af", "#dcd3ff", "#ff94cc",
+    "#ffa45b", "#806d40", "#2a363b", "#99b898", "#feceab", "#ff847c",
+    "#e84a5f", "#2a363b", "#56a5cc", "#c3e88d", "#ffcc5c", "#b09f59",
+    "#ff5e57", "#674d3c", "#4c4f69", "#8372a8", "#ff7c43", "#6a8a82"
+]
 
-    # One-way ANOVA to check for global variance differences
-    _, p_val = stats.f_oneway(*group_data)
-    if p_val > 0.05 or pd.isna(p_val):
-        return {g: "a" for g in groups} # No significant global difference
 
-    # Tukey HSD post-hoc test
-    tukey = pairwise_tukeyhsd(endog=df[val_col], groups=df[group_col], alpha=0.05)
-    
-    # Create a significance matrix based on Tukey results
-    sig_matrix = pd.DataFrame(False, index=groups, columns=groups)
-    for row in tukey.summary().data[1:]:
-        g1, g2, reject = row[0], row[1], row[-1]
-        if str(reject).strip().lower() == "true":
-            sig_matrix.loc[g1, g2] = True
-            sig_matrix.loc[g2, g1] = True
-
-    # Assign non-overlapping letters to non-significantly different groups
-    letters = {g: "" for g in groups}
-    current_char = ord("a")
-    for g1 in groups:
-        if not letters[g1]:
-            letter = chr(current_char)
-            current_char += 1
-            letters[g1] += letter
-            for g2 in groups:
-                if g1 != g2 and not sig_matrix.loc[g1, g2]:
-                    if letter not in letters[g2]:
-                        letters[g2] += letter
-
-    return letters
-
-def main():
-    parser = argparse.ArgumentParser(description="Generate a normalized grouped Boxplot with ANOVA and Tukey HSD from Metadata")
-    parser.add_argument("-m", "--metadata", required=True, help="Path to metadata file (Excel or CSV)")
-    parser.add_argument("-x", "--treatment", required=True, help="X-axis group column name (e.g. Type)")
-    parser.add_argument("-y", "--morphology", required=True, nargs='+', help="List of numerical columns to plot together")
-    parser.add_argument("--normalize", choices=["yes", "no"], default="yes",
-                        help="Z-score normalize columns before plotting (default: yes). "
-                             "Use 'no' to plot raw values with original units.")
-    parser.add_argument("--no_legend", action="store_true",
-                        help="Hide the color legend from the plot.")
-    args = parser.parse_args()
-
-    print(f"[*] Loading metadata from: {args.metadata}")
-    
-    # Read metadata file based on extension
-    if args.metadata.endswith('.csv'):
-        df = pd.read_csv(args.metadata)
+def export_topological_projection(fig, output_base, fmt, pad_inches=0.4):
+    if fmt == 'pdf':
+        with PdfPages(f"{output_base}.pdf") as pdf:
+            pdf.savefig(fig, bbox_inches='tight', pad_inches=pad_inches,
+                        facecolor=fig.get_facecolor())
     else:
-        df = pd.read_excel(args.metadata)
+        ext = 'tif' if fmt == 'tiff' else 'png'
+        fig.savefig(f"{output_base}.{ext}", format=fmt, dpi=300,
+                    bbox_inches='tight', pad_inches=pad_inches,
+                    facecolor=fig.get_facecolor())
 
-    # Ensure all target columns exist in the dataframe
-    missing_cols = [col for col in [args.treatment] + args.morphology if col not in df.columns]
-    if missing_cols:
-        raise ValueError(f"Missing columns in metadata: {missing_cols}")
+def export_summary_table(df, output_base, sheet_name='LEfSe', extra_sheets=None):
+    path = f"{output_base}_table.xlsx"
+    with pd.ExcelWriter(path, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name=sheet_name)
+        ws = writer.sheets[sheet_name]
+        for col in ws.columns:
+            w = max((len(str(c.value)) for c in col if c.value), default=8)
+            ws.column_dimensions[col[0].column_letter].width = min(w + 4, 60)
 
-    # Drop rows missing treatment data and enforce string type for grouping
-    df = df.dropna(subset=[args.treatment])
-    df[args.treatment] = df[args.treatment].astype(str)
+        if extra_sheets:
+            for sname, sdf in extra_sheets.items():
+                sname = sname[:31]
+                sdf.to_excel(writer, index=False, sheet_name=sname)
+                ws2 = writer.sheets[sname]
+                for col in ws2.columns:
+                    w = max((len(str(c.value)) for c in col if c.value), default=8)
+                    ws2.column_dimensions[col[0].column_letter].width = min(w + 4, 60)
+    print(f"    [*] Table saved: {path}")
 
-    # Clean and normalize numerical columns
-    normalize = args.normalize == "yes"
-    if normalize:
-        print("[*] Normalizing morphology columns (Z-score scaling)...")
-    else:
-        print("[*] Skipping normalization — plotting raw values...")
-    plot_cols = []
-    for col in args.morphology:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-        if normalize:
-            norm_col_name = f"{col}_Zscore"
-            df[norm_col_name] = (df[col] - df[col].mean()) / df[col].std()
-            plot_cols.append(norm_col_name)
-        else:
-            plot_cols.append(col)
-    normalized_cols = plot_cols
+def relative_abundance(df_counts):
+    totals = df_counts.sum(axis=0)
+    totals = totals.replace(0, np.nan)
+    return df_counts.div(totals, axis=1)
 
-    # Melt DataFrame to long format for Seaborn grouped boxplot compatibility
-    df_melted = df.melt(id_vars=[args.treatment], 
-                        value_vars=normalized_cols, 
-                        var_name='Morphology_Trait', 
-                        value_name='Normalized_Value')
-    
-    # Drop NaNs generated during melting
-    df_melted = df_melted.dropna(subset=['Normalized_Value'])
+def kruskal_wallis_test(ra_df, groups, alpha=0.05):
+    unique_groups = sorted(set(groups))
+    passing = {}
+    for feat in tqdm(ra_df.index, desc='  Kruskal-Wallis', unit='feat', ncols=72, colour='cyan'):
+        grp_arrays = [ra_df.loc[feat, [s for s, g in zip(ra_df.columns, groups) if g == ug]].values
+                      for ug in unique_groups]
+        valid = [a for a in grp_arrays if len(a) > 0 and a.std() >= 0]
+        if len(valid) < 2:
+            continue
+        try:
+            H, p = sp_stats.kruskal(*valid)
+        except ValueError:
+            continue
+        if p < alpha:
+            passing[feat] = (H, p)
+    return passing
 
-    # Prepare data arrays for plotting iteration
-    treatments = sorted(df_melted[args.treatment].unique())
-    traits = normalized_cols
-    n_treatments = len(treatments)
+def wilcoxon_pairwise_test(ra_df, groups, candidate_features, alpha=0.05):
+    unique_groups = sorted(set(groups))
+    groups_arr    = np.array(groups)
+    passed = {}
+    for feat in tqdm(candidate_features, desc='  Wilcoxon      ', unit='feat', ncols=72, colour='green'):
+        row        = ra_df.loc[feat]
+        medians    = {ug: row[[s for s, g in zip(ra_df.columns, groups) if g == ug]].median()
+                      for ug in unique_groups}
+        winner     = max(medians, key=medians.get)
 
-    # Calculate Tukey letters per morphology trait independently
-    letters_dict = {}
-    for trait in traits:
-        trait_df = df_melted[df_melted['Morphology_Trait'] == trait]
-        letters_dict[trait] = get_cld_letters(trait_df, 'Normalized_Value', args.treatment)
+        significant = False
+        for i in range(len(unique_groups)):
+            for j in range(i + 1, len(unique_groups)):
+                g1, g2 = unique_groups[i], unique_groups[j]
+                v1 = row[groups_arr == g1].values
+                v2 = row[groups_arr == g2].values
+                if len(v1) < 2 or len(v2) < 2:
+                    continue
+                try:
+                    _, p = sp_stats.mannwhitneyu(v1, v2, alternative='two-sided')
+                    if p < alpha:
+                        significant = True
+                        break
+                except ValueError:
+                    continue
+            if significant:
+                break
+        if significant:
+            passed[feat] = winner
+    return passed
 
-    # Plot configuration (publication style)
-    sns.set_theme(style="ticks")
-    dodge_width = 0.8
+def compute_lda_scores(ra_df, groups, candidate_features, winning_classes):
+    groups_arr    = np.array(groups)
+    scores        = {}
+    X_full = np.log1p(ra_df.loc[candidate_features].T.values)   
 
-    if normalize:
-        # --- NORMALIZED MODE: single figure, all traits on a shared Z-score Y-axis ---
-        fig, ax_single = plt.subplots(figsize=(12, 6))
+    for feat_idx, feat in enumerate(tqdm(candidate_features, desc='  LDA scoring   ', unit='feat', ncols=72, colour='yellow')):
+        x = X_full[:, feat_idx].reshape(-1, 1)   
+        winner = winning_classes[feat]
+        y_bin = (groups_arr == winner).astype(int)
+
+        if len(np.unique(y_bin)) < 2:
+            scores[feat] = 0.0
+            continue
 
         try:
-            ax = sns.boxplot(
-                data=df_melted, x='Morphology_Trait', y='Normalized_Value',
-                hue=args.treatment, hue_order=treatments,
-                palette="Set2", width=dodge_width, gap=0.15,
-                linewidth=1.5, flierprops=dict(marker='o', markersize=5, alpha=0.5),
-                ax=ax_single
-            )
-        except TypeError:
-            ax = sns.boxplot(
-                data=df_melted, x='Morphology_Trait', y='Normalized_Value',
-                hue=args.treatment, hue_order=treatments,
-                palette="Set2", width=0.6, linewidth=1.5,
-                flierprops=dict(marker='o', markersize=5, alpha=0.5),
-                ax=ax_single
-            )
+            lda = LinearDiscriminantAnalysis(solver='svd')
+            lda.fit(x, y_bin)
+            ld1 = lda.transform(x).ravel()
+            mean_winner = ld1[y_bin == 1].mean()
+            mean_rest   = ld1[y_bin == 0].mean()
+            raw_score   = np.log10(abs(mean_winner - mean_rest) + 1e-9)
+            raw_score = max(abs(raw_score), 0)
+            scores[feat] = raw_score if mean_winner > mean_rest else -raw_score
+        except Exception:
+            scores[feat] = 0.0
 
-        offsets = np.linspace(-dodge_width/2 + dodge_width/(2*n_treatments),
-                               dodge_width/2 - dodge_width/(2*n_treatments),
-                               n_treatments)
-        y_max_global  = df_melted['Normalized_Value'].max()
-        y_range        = y_max_global - df_melted['Normalized_Value'].min()
-        text_y_offset  = y_range * 0.05
+    return scores
 
-        for i, trait in enumerate(traits):
-            trait_df = df_melted[df_melted['Morphology_Trait'] == trait]
-            for j, treatment in enumerate(treatments):
-                group_data = trait_df[trait_df[args.treatment] == treatment]['Normalized_Value']
-                if not group_data.empty:
-                    x_pos = i + offsets[j]
-                    y_pos = group_data.max() + text_y_offset
-                    ax.text(x_pos, y_pos, letters_dict[trait].get(treatment, ""),
-                            ha='center', va='bottom', fontsize=10, fontweight='bold', color='black')
+def run_lefse(df_rank, rank_level, metadata_path, category_col, sample_id_col,
+              output_base, fmt, lda_threshold=2.0, kw_alpha=0.05, wilcox_alpha=0.05,
+              top_n=3, sort_by_lda=False, label_col=None, no_table=False,
+              focus_groups=None):
 
-        ax.set_ylim(bottom=df_melted['Normalized_Value'].min() - text_y_offset,
-                    top=y_max_global + (text_y_offset * 3))
-        ax.set_xticklabels([col.replace('_Zscore', '') for col in traits], fontweight='bold')
-        plt.xlabel("", fontsize=12, fontweight='bold')
-        plt.ylabel("Z-score", fontsize=12, fontweight='bold')
-        if not args.no_legend:
-            plt.legend(title=args.treatment, title_fontsize='11', fontsize='10',
-                       bbox_to_anchor=(1.02, 1), loc='upper left', frameon=False)
-        else:
-            plt.legend().remove()
-        sns.despine()
-        plt.tight_layout()
+    comp_name = f" ({focus_groups[0]} vs {focus_groups[1]})" if focus_groups else ""
+    print(f"\n[*] Running LEfSe{comp_name} → {output_base}")
 
+    df_work = df_rank.copy()
+    if label_col and label_col in df_work.columns:
+        df_work.index = df_work[label_col].astype(str)
+    elif 'Name' in df_work.columns:
+        df_work.index = df_work['Name'].astype(str)
+    elif 'Scientific Name' in df_work.columns:
+        df_work.index = df_work['Scientific Name'].astype(str)
     else:
-        # --- RAW MODE: one subplot per variable, each with its own Y-axis scale ---
-        n_traits  = len(traits)
-        fig, axes = plt.subplots(1, n_traits, figsize=(5 * n_traits, 6), sharey=False)
-        if n_traits == 1:
-            axes = [axes]
+        df_work.index = df_work.index.astype(str)
 
-        for idx, (trait, col_name) in enumerate(zip(traits, args.morphology)):
-            ax = axes[idx]
-            trait_df = df_melted[df_melted['Morphology_Trait'] == trait].copy()
+    meta_cols = [c for c in ['Rank', 'TaxID', 'original_header', 'Name', 'Scientific Name']
+                 if c in df_work.columns]
+    sample_cols = [c for c in df_work.columns if c not in meta_cols]
 
-            try:
-                sns.boxplot(
-                    data=trait_df, x=args.treatment, y='Normalized_Value',
-                    hue=args.treatment, legend=False,
-                    order=treatments, palette="Set2", width=dodge_width, gap=0.15,
-                    linewidth=1.5, flierprops=dict(marker='o', markersize=5, alpha=0.5),
-                    ax=ax
-                )
-            except TypeError:
-                sns.boxplot(
-                    data=trait_df, x=args.treatment, y='Normalized_Value',
-                    hue=args.treatment, legend=False,
-                    order=treatments, palette="Set2", width=0.6, linewidth=1.5,
-                    flierprops=dict(marker='o', markersize=5, alpha=0.5),
-                    ax=ax
-                )
+    df_counts = df_work[sample_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
 
-            # CLD letters — each subplot has its own Y scale
-            y_max_local   = trait_df['Normalized_Value'].max()
-            y_range_local = y_max_local - trait_df['Normalized_Value'].min()
-            text_y_offset = y_range_local * 0.05
+    if metadata_path.endswith('.csv'):
+        meta = pd.read_csv(metadata_path)
+    else:
+        meta = pd.read_excel(metadata_path)
 
-            for j, treatment in enumerate(treatments):
-                group_data = trait_df[trait_df[args.treatment] == treatment]['Normalized_Value']
-                if not group_data.empty:
-                    ax.text(j, group_data.max() + text_y_offset,
-                            letters_dict[trait].get(treatment, ""),
-                            ha='center', va='bottom', fontsize=10, fontweight='bold', color='black')
+    meta[sample_id_col] = meta[sample_id_col].astype(str).str.strip().str.lower()
+    meta_map = dict(zip(meta[sample_id_col], meta[category_col].astype(str)))
 
-            ax.set_ylim(bottom=trait_df['Normalized_Value'].min() - text_y_offset,
-                        top=y_max_local + (text_y_offset * 3))
-            ax.set_title(col_name, fontsize=12, fontweight='bold')
-            ax.set_xlabel("")
-            ax.set_ylabel(col_name, fontsize=11, fontweight='bold')
-            ax.set_xticks(range(len(treatments)))
-            ax.set_xticklabels(treatments, rotation=45, ha='right', fontweight='bold')
+    all_samples   = list(df_counts.columns)
+    meta_keys     = list(meta_map.keys())
+    groups_raw    = []
+    for name in all_samples:
+        clean = name.split('_')[0].strip().lower()
+        val   = meta_map.get(clean, 'Unknown')
 
-            sns.despine(ax=ax)
+        if val in ('Unknown', 'nan'):
+            candidates = [k for k in meta_keys if clean.startswith(k)]
+            if candidates:
+                best_key = max(candidates, key=len)
+                val      = meta_map[best_key]
 
-        # Single shared X-axis label across all subplots
-        fig.supxlabel(args.treatment, fontsize=12, fontweight='bold')
+        if val == 'nan':
+            val = 'Unknown'
+        groups_raw.append(val)
 
-        # Original legend style on the last subplot
-        if not args.no_legend:
-            plt.legend(title=args.treatment, title_fontsize='11', fontsize='10',
-                       bbox_to_anchor=(1.02, 1), loc='upper left', frameon=False)
+    # DYNAMIC FILTERING: If focus_groups are provided, strictly limit the analysis to those groups
+    if focus_groups:
+        keep_mask = [g in focus_groups for g in groups_raw]
+    else:
+        keep_mask = [g != 'Unknown' for g in groups_raw]
+
+    common_samples = [s for s, k in zip(all_samples, keep_mask) if k]
+    groups         = [g for g, k in zip(groups_raw,  keep_mask) if k]
+
+    if len(common_samples) < 3:
+        print(f"    [!] CRITICAL: Not enough samples matched for {comp_name}. Skipping.")
+        return
+
+    df_counts = df_counts[common_samples]
+    unique_groups = sorted(set(groups))
+
+    ra_df = relative_abundance(df_counts).fillna(0)
+    ra_df = ra_df.loc[ra_df.var(axis=1) > 0]
+
+    kw_results = kruskal_wallis_test(ra_df, groups, alpha=kw_alpha)
+    if not kw_results:
+        print("    [!] No features passed Kruskal-Wallis. Exiting.")
+        return
+
+    winning_classes = wilcoxon_pairwise_test(ra_df, groups, list(kw_results.keys()), alpha=wilcox_alpha)
+    if not winning_classes:
+        print("    [!] No features passed Wilcoxon. Exiting.")
+        return
+
+    lda_scores = compute_lda_scores(ra_df, groups, list(winning_classes.keys()), winning_classes)
+
+    records = []
+    for feat, winner in winning_classes.items():
+        H, kw_p = kw_results[feat]
+        lda      = lda_scores.get(feat, 0.0)
+        abs_lda  = abs(lda)
+        if abs_lda < lda_threshold:
+            continue
+        records.append({
+            'Feature':       feat,
+            'Class':         winner,
+            'LDA_score':     round(lda,     4),
+            'Abs_LDA':       round(abs_lda, 4),
+            'KW_H':          round(H,       4),
+            'KW_p':          round(kw_p,    6),
+            'Mean_RA':       round(float(ra_df.loc[feat].mean()), 6),
+        })
+
+    if not records:
+        print(f"    [!] No features passed |LDA| >= {lda_threshold}. Try lowering --lda_threshold.")
+        return
+
+    df_results = pd.DataFrame(records).sort_values('Abs_LDA', ascending=False)
+    
+    if top_n > 0:
+        df_plot = df_results.sort_values('Abs_LDA', ascending=False)
+        df_plot = df_plot.groupby('Class').head(top_n).copy()
+    else:
+        df_plot = df_results.copy()
+
+    group_means = []
+    for feat in df_plot['Feature']:
+        row = {'Feature': feat}
+        for ug in unique_groups:
+            samp = [s for s, g in zip(common_samples, groups) if g == ug]
+            row[f'MeanRA_{ug}'] = round(float(ra_df.loc[feat, samp].mean()), 6)
+        group_means.append(row)
+    df_group_means = pd.DataFrame(group_means)
+
+    # Assign distinct colors per unique group for consistency
+    color_map = {g: COLORS[i % len(COLORS)] for i, g in enumerate(unique_groups)}
+
+    if sort_by_lda:
+        df_plot = df_plot.sort_values('LDA_score')
+    else:
+        df_plot = df_plot.sort_values(['Class', 'Abs_LDA'], ascending=[True, False])
+
+    n_bars   = len(df_plot)
+    fig_h    = max(5, n_bars * 0.38 + 2)
+    fig, ax  = plt.subplots(figsize=(11, fig_h))
+    fig.patch.set_facecolor('white')
+    ax.set_facecolor('#F7F7F7')
+
+    for i, row in enumerate(df_plot.itertuples()):
+        lda_val = row.LDA_score
+        color   = color_map[row.Class]
+        bar_val = lda_val if sort_by_lda else row.Abs_LDA
+        bar_dir = 1 if lda_val >= 0 else -1
+
+        if not sort_by_lda:
+            ax.barh(i, bar_val, color=color, edgecolor='white', linewidth=0.5, height=0.72, zorder=3)
         else:
-            plt.legend().remove()
+            ax.barh(i, lda_val, color=color, edgecolor='white', linewidth=0.5, height=0.72, zorder=3)
 
-        plt.tight_layout()
+        label_x = bar_val + 0.05 if not sort_by_lda else (lda_val + 0.05 * bar_dir)
+        ax.text(label_x, i, f"{row.Abs_LDA:.2f}", va='center', ha='left', fontsize=8.5, color='#333333', zorder=4)
 
-    # 3. Dynamic output folder and filename generation
-    # Extract only the first word/acronym of each morphology column to keep filenames readable
-    safe_names = [col.split(' ')[0].replace('/', '_').replace('\\', '_') for col in args.morphology]
-    combined_name = "_".join(safe_names)
+    ax.set_yticks(range(n_bars))
+    ax.set_yticklabels(df_plot['Feature'].tolist(), fontsize=9.5)
+
+    ax.axvline(0, color='#888888', linewidth=0.8, linestyle='--', zorder=2)
+    ax.set_xlabel('LDA Score (log₁₀)', fontsize=12, labelpad=8)
+    ax.set_title(f'LEfSe — {rank_level.capitalize()} level{comp_name}\n[|LDA| ≥ {lda_threshold} | KW p<{kw_alpha} | Wilcoxon p<{wilcox_alpha}]',
+                 fontsize=13, fontweight='bold', pad=14)
+    ax.spines[['top', 'right']].set_visible(False)
+    ax.spines[['left', 'bottom']].set_color('#CCCCCC')
+    ax.tick_params(axis='both', which='both', length=0)
+    ax.grid(axis='x', color='white', linewidth=1.2, zorder=1)
+    ax.set_xlim(left=0 if not sort_by_lda else None)
+
+    patches = [mpatches.Patch(color=color_map[g], label=g) for g in unique_groups]
+    ax.legend(handles=patches, title='Class', title_fontsize=10, fontsize=9.5, loc='lower right',
+              frameon=True, framealpha=0.9, edgecolor='#CCCCCC')
+
+    subtitle_text = f"n = {len(df_results)} total significant biomarkers"
+    if top_n > 0:
+        subtitle_text += f" | showing top {top_n} per class"
+    else:
+        subtitle_text += f" | showing all"
+        
+    ax.text(0.01, 1.01, subtitle_text,
+            transform=ax.transAxes, fontsize=9, color='#666666', ha='left')
+
+    plt.tight_layout(pad=1.5)
+    export_topological_projection(fig, output_base, fmt)
+    plt.close(fig)
+
+    if not no_table:
+        export_summary_table(df_results, output_base, sheet_name='LEfSe_Biomarkers',
+                             extra_sheets={'Group_Mean_RelAbund': df_group_means})
+
+
+def main():
+    parser = argparse.ArgumentParser(description='LEfSe — Linear Discriminant Analysis Effect Size.')
+    parser.add_argument('-d',  '--data',          type=str, required=True)
+    parser.add_argument('-r',  '--rank',           type=str, required=True)
+    parser.add_argument('-m',  '--metadata',       type=str, required=True)
+    parser.add_argument('-c',  '--category',       type=str, required=True)
+    parser.add_argument('-id', '--sample_id',      type=str, default='SampleID')
+    parser.add_argument('-fmt','--format',         type=str, choices=['pdf', 'png', 'tiff'], default='pdf')
+    parser.add_argument('-o',  '--output',         type=str, default=None)
+    parser.add_argument('-org','--organism',       type=str, default='Microbiome')
+    parser.add_argument('--lda_threshold',         type=float, default=2.0)
+    parser.add_argument('--kw_alpha',              type=float, default=0.05)
+    parser.add_argument('--wilcox_alpha',          type=float, default=0.05)
+    parser.add_argument('--top',                   type=int,   default=3,
+                        help='Maximum number of biomarkers to display PER CATEGORY (default: 3. Set to 0 for ALL).')
+    parser.add_argument('--rank_by_lda',           action='store_true')
+    parser.add_argument('--label_col',             type=str, default=None)
+    parser.add_argument('--no_table',              action='store_true')
     
-    # Create output directory automatically inside results/
-    output_dir = os.path.join("..", "results", f"Morphology_{combined_name}")
-    os.makedirs(output_dir, exist_ok=True)
-    
-    output_filename = f"{combined_name}_normalized_boxplot.png"
-    output_path = os.path.join(output_dir, output_filename)
+    # NEW ARGUMENT
+    parser.add_argument('--pairwise',              action='store_true',
+                        help='Run exhaustive pairwise combinations between all classes in the metadata category.')
 
-    # Save to disk
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    print(f"[✓] Plot successfully saved to: {output_path}")
+    args = parser.parse_args()
 
-if __name__ == "__main__":
+    OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'results', 'LEfSe')
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    safe_org  = args.organism.replace(' ', '_')
+    base_name = args.output if args.output else f"{safe_org}_{args.rank}_LEfSe"
+    
+    df      = pd.read_excel(args.data, sheet_name=0)
+    df_rank = df[df['Rank'].str.lower() == args.rank.lower()].copy()
+
+    if df_rank.empty:
+        raise ValueError(f"No data found for rank: {args.rank}")
+
+    # Determine execution mode
+    if args.pairwise:
+        # Pre-read metadata to find unique groups
+        if args.metadata.endswith('.csv'):
+            meta = pd.read_csv(args.metadata)
+        else:
+            meta = pd.read_excel(args.metadata)
+            
+        unique_classes = meta[args.category].dropna().astype(str).unique().tolist()
+        unique_classes = [c for c in unique_classes if c.lower() != 'nan']
+        
+        if len(unique_classes) < 2:
+            raise ValueError("Pairwise mode requires at least 2 distinct classes in the metadata.")
+            
+        combos = list(combinations(sorted(unique_classes), 2))
+        print(f"[*] Pairwise Mode Enabled: Found {len(unique_classes)} classes, running {len(combos)} combinations.")
+        
+        for g1, g2 in combos:
+            # Modify output base to avoid overwriting files
+            pair_base = os.path.join(OUTPUT_DIR, f"{base_name}_{g1}_vs_{g2}")
+            
+            run_lefse(
+                df_rank       = df_rank,
+                rank_level    = args.rank,
+                metadata_path = args.metadata,
+                category_col  = args.category,
+                sample_id_col = args.sample_id,
+                output_base   = pair_base,
+                fmt           = args.format.lower(),
+                lda_threshold = args.lda_threshold,
+                kw_alpha      = args.kw_alpha,
+                wilcox_alpha  = args.wilcox_alpha,
+                top_n         = args.top,
+                sort_by_lda   = args.rank_by_lda,
+                label_col     = args.label_col,
+                no_table      = args.no_table,
+                focus_groups  = [g1, g2] # Pass the constrained groups
+            )
+            
+    else:
+        # Standard Multi-Class Mode
+        output_base = os.path.join(OUTPUT_DIR, base_name)
+        run_lefse(
+            df_rank       = df_rank,
+            rank_level    = args.rank,
+            metadata_path = args.metadata,
+            category_col  = args.category,
+            sample_id_col = args.sample_id,
+            output_base   = output_base,
+            fmt           = args.format.lower(),
+            lda_threshold = args.lda_threshold,
+            kw_alpha      = args.kw_alpha,
+            wilcox_alpha  = args.wilcox_alpha,
+            top_n         = args.top,
+            sort_by_lda   = args.rank_by_lda,
+            label_col     = args.label_col,
+            no_table      = args.no_table,
+            focus_groups  = None
+        )
+
+if __name__ == '__main__':
     main()

@@ -5,26 +5,6 @@ LEfSe — Linear Discriminant Analysis Effect Size
 Anderson 2001 / Segata et al. 2011 (PLoS Comput Biol)
 
 Pipeline-compatible script for the Kraken2 taxonomic classification output.
-
-Usage
------
-python 09_generate_LEfSe.py \
-    -d  ../results/final_tables/taxonomic_classification_clean.xlsx \
-    -r  genus \
-    -m  metadata.csv \
-    -c  Month \
-    -fmt png
-
-Optional
---------
---rank_by_lda     Sort bars by LDA score (default: grouped by winning class)
---top             Number of top taxa to show (default: 30)
---lda_threshold   Minimum |LDA| score to include (default: 2.0)
---kw_alpha        Kruskal-Wallis significance cut-off (default: 0.05)
---wilcox_alpha    Wilcoxon significance cut-off (default: 0.05)
---no_table        Skip Excel export
---label_col       Column to use as feature label (default: "Name")
---tree_threshold  (Legacy) Ignored in vectorized version, kept for compatibility.
 """
 
 import argparse
@@ -45,7 +25,7 @@ from tqdm import tqdm
 warnings.filterwarnings('ignore')
 
 # ---------------------------------------------------------------------------
-# Shared palette — identical across pipeline scripts
+# Shared palette
 # ---------------------------------------------------------------------------
 COLORS = [
     "#4E79A7", "#F28E2B", "#E15759", "#76B7B2", "#59A14F",
@@ -58,10 +38,6 @@ COLORS = [
 ]
 
 
-# ===========================================================================
-# I/O helpers
-# ===========================================================================
-
 def export_topological_projection(fig, output_base, fmt, pad_inches=0.4):
     if fmt == 'pdf':
         with PdfPages(f"{output_base}.pdf") as pdf:
@@ -72,7 +48,6 @@ def export_topological_projection(fig, output_base, fmt, pad_inches=0.4):
         fig.savefig(f"{output_base}.{ext}", format=fmt, dpi=300,
                     bbox_inches='tight', pad_inches=pad_inches,
                     facecolor=fig.get_facecolor())
-
 
 def export_summary_table(df, output_base, sheet_name='LEfSe', extra_sheets=None):
     path = f"{output_base}_table.xlsx"
@@ -93,29 +68,17 @@ def export_summary_table(df, output_base, sheet_name='LEfSe', extra_sheets=None)
                     ws2.column_dimensions[col[0].column_letter].width = min(w + 4, 60)
     print(f"    [*] Table saved: {path}")
 
-
-# ===========================================================================
-# Statistical core
-# ===========================================================================
-
 def relative_abundance(df_counts):
-    """Row-normalise to relative abundance (proportions)."""
     totals = df_counts.sum(axis=0)
     totals = totals.replace(0, np.nan)
     return df_counts.div(totals, axis=1)
 
-
 def kruskal_wallis_test(ra_df, groups, alpha=0.05):
-    """
-    Run Kruskal-Wallis H-test for each feature across groups.
-    Returns a dict: feature → (H, p)  only for features passing alpha.
-    """
     unique_groups = sorted(set(groups))
     passing = {}
     for feat in tqdm(ra_df.index, desc='  Kruskal-Wallis', unit='feat', ncols=72, colour='cyan'):
         grp_arrays = [ra_df.loc[feat, [s for s, g in zip(ra_df.columns, groups) if g == ug]].values
                       for ug in unique_groups]
-        # need at least 2 non-degenerate groups
         valid = [a for a in grp_arrays if len(a) > 0 and a.std() >= 0]
         if len(valid) < 2:
             continue
@@ -127,15 +90,7 @@ def kruskal_wallis_test(ra_df, groups, alpha=0.05):
             passing[feat] = (H, p)
     return passing
 
-
 def wilcoxon_pairwise_test(ra_df, groups, candidate_features, alpha=0.05):
-    """
-    For each candidate feature, run pairwise Wilcoxon rank-sum tests
-    between every group pair. A feature passes if AT LEAST ONE pair
-    is significant (consistent with LEfSe's all-against-one strategy).
-
-    Returns dict: feature → winning_class (group with highest median)
-    """
     unique_groups = sorted(set(groups))
     groups_arr    = np.array(groups)
     passed = {}
@@ -162,33 +117,18 @@ def wilcoxon_pairwise_test(ra_df, groups, candidate_features, alpha=0.05):
                     continue
             if significant:
                 break
-
         if significant:
             passed[feat] = winner
-
     return passed
 
-
 def compute_lda_scores(ra_df, groups, candidate_features, winning_classes):
-    """
-    Fit a one-vs-rest LDA per feature using the log-transformed relative
-    abundance. Returns dict: feature → signed LDA score.
-
-    Sign convention: positive = enriched in winning_class.
-    """
     groups_arr    = np.array(groups)
-    unique_groups = sorted(set(groups))
     scores        = {}
-
-    # Build full feature matrix (samples × features) log-transformed
-    X_full = np.log1p(ra_df.loc[candidate_features].T.values)   # (n_samples, n_feats)
+    X_full = np.log1p(ra_df.loc[candidate_features].T.values)   
 
     for feat_idx, feat in enumerate(tqdm(candidate_features, desc='  LDA scoring   ', unit='feat', ncols=72, colour='yellow')):
-        x = X_full[:, feat_idx].reshape(-1, 1)   # single feature
-
+        x = X_full[:, feat_idx].reshape(-1, 1)   
         winner = winning_classes[feat]
-
-        # Binary labels: winner vs rest
         y_bin = (groups_arr == winner).astype(int)
 
         if len(np.unique(y_bin)) < 2:
@@ -198,12 +138,10 @@ def compute_lda_scores(ra_df, groups, candidate_features, winning_classes):
         try:
             lda = LinearDiscriminantAnalysis(solver='svd')
             lda.fit(x, y_bin)
-            # LDA score = absolute value of the mean difference in LD1 space
             ld1 = lda.transform(x).ravel()
             mean_winner = ld1[y_bin == 1].mean()
             mean_rest   = ld1[y_bin == 0].mean()
             raw_score   = np.log10(abs(mean_winner - mean_rest) + 1e-9)
-            # Scale to typical LEfSe range (~2–5)
             raw_score = max(abs(raw_score), 0)
             scores[feat] = raw_score if mean_winner > mean_rest else -raw_score
         except Exception:
@@ -211,16 +149,10 @@ def compute_lda_scores(ra_df, groups, candidate_features, winning_classes):
 
     return scores
 
-
-# ===========================================================================
-# Cladogram
-# ===========================================================================
-
 RANK_ORDER = ['domain', 'superkingdom', 'phylum', 'class',
               'order', 'family', 'genus', 'species']
 
 def _get_label(row, label_col):
-    """Pick best display name from a DataFrame row."""
     if label_col and label_col in row.index and pd.notna(row[label_col]):
         return str(row[label_col]).strip()
     for col in ('Name', 'Scientific Name', 'TaxID'):
@@ -228,18 +160,8 @@ def _get_label(row, label_col):
             return str(row[col]).strip()
     return str(row.name)
 
-
 def build_taxonomy_tree(df_full, common_samples, label_col=None, tree_threshold=0.95):
-    """
-    Build a lightweight tree from all ranks in the data.
-    *Optimized with Numpy Vectorized Pearson Correlation*
-    """
-    meta_cols = {'Rank', 'TaxID', 'original_header', 'Name', 'Scientific Name'}
-
-    # Keep only columns that are actual samples
     available_samples = [c for c in common_samples if c in df_full.columns]
-
-    # Determine which ranks are present
     all_ranks_lc = df_full['Rank'].str.lower().unique()
     present_ranks = [r for r in RANK_ORDER if r in all_ranks_lc]
 
@@ -247,7 +169,6 @@ def build_taxonomy_tree(df_full, common_samples, label_col=None, tree_threshold=
         return {}, []
 
     nodes = {}
-    # Virtual root
     nodes['__root__'] = dict(name='root', rank='root', rank_idx=-1,
                               children=[], parent=None,
                               counts=np.zeros(len(available_samples)))
@@ -266,9 +187,6 @@ def build_taxonomy_tree(df_full, common_samples, label_col=None, tree_threshold=
                                children=[], parent=None, counts=counts,
                                lda=0.0, cls=None, color='#BBBBBB', xy=(0.0, 0.0))
 
-    # ---------------------------------------------------------------
-    # Parent-child inference via count correlation (VECTORIZED)
-    # ---------------------------------------------------------------
     for r_idx in tqdm(range(len(present_ranks)), desc='  Building tree ', unit='rank', ncols=72, colour='magenta'):
         rank     = present_ranks[r_idx]
         children = [nid for nid, n in nodes.items() if n['rank'] == rank]
@@ -277,30 +195,21 @@ def build_taxonomy_tree(df_full, common_samples, label_col=None, tree_threshold=
             parent_pool = ['__root__']
         else:
             parent_rank = present_ranks[r_idx - 1]
-            parent_pool = [nid for nid, n in nodes.items()
-                           if n['rank'] == parent_rank]
+            parent_pool = [nid for nid, n in nodes.items() if n['rank'] == parent_rank]
 
         if not parent_pool:
             parent_pool = ['__root__']
 
-        # Pre-stack parent counts: shape (P, S)
         par_counts = np.vstack([nodes[p]['counts'] for p in parent_pool])  
-        
-        # --- VECTORIZATION MAGIC ---
-        # Center and normalize ALL parents to unit vectors simultaneously
         par_mean = par_counts.mean(axis=1, keepdims=True)
         par_centered = par_counts - par_mean
         par_norm = np.linalg.norm(par_centered, axis=1, keepdims=True)
         
-        # Avoid division by zero warnings
         with np.errstate(divide='ignore', invalid='ignore'):
             par_unit = np.where(par_norm == 0, 0, par_centered / par_norm)
-        # ---------------------------
 
         for child_id in children:
             cv = nodes[child_id]['counts']
-            
-            # If child has no counts or no samples, default to first parent
             if cv.sum() == 0 or par_counts.shape[1] == 0:
                 best_par = parent_pool[0]
             else:
@@ -310,14 +219,8 @@ def build_taxonomy_tree(df_full, common_samples, label_col=None, tree_threshold=
                 if cv_norm < 1e-12:
                     best_par = parent_pool[0]
                 else:
-                    # Normalize child to unit vector
                     cv_unit = cv_centered / cv_norm
-                    
-                    # Matrix-vector multiplication (dot product)
-                    # Calculates Pearson correlation against ALL parents INSTANTLY!
                     corrs = par_unit @ cv_unit
-                    
-                    # Find the parent with the highest correlation
                     best_idx = np.argmax(corrs)
                     best_par = parent_pool[best_idx]
 
@@ -326,9 +229,7 @@ def build_taxonomy_tree(df_full, common_samples, label_col=None, tree_threshold=
 
     return nodes, present_ranks
 
-
 def _assign_angles(node_id, nodes, start, end):
-    """Recursively assign angular sectors to all nodes (DFS)."""
     node     = nodes[node_id]
     node['angle_start'] = start
     node['angle_end']   = end
@@ -347,9 +248,7 @@ def _assign_angles(node_id, nodes, start, end):
         _assign_angles(ch_id, nodes, cur, cur + share)
         cur += share
 
-
 def _leaf_count(node_id, nodes):
-    """Return list of leaf descendants (nodes with no children)."""
     ch = nodes[node_id]['children']
     if not ch:
         return [node_id]
@@ -358,25 +257,9 @@ def _leaf_count(node_id, nodes):
         leaves.extend(_leaf_count(c, nodes))
     return leaves
 
-
-def generate_cladogram(nodes, present_ranks, biomarkers_df, color_map,
-                       output_base, fmt, title_suffix=''):
-    """
-    Draw the classic LEfSe circular cladogram.
-
-    Parameters
-    ----------
-    nodes          : tree built by build_taxonomy_tree()
-    present_ranks  : ordered list of rank strings
-    biomarkers_df  : DataFrame with columns Feature, Class, Abs_LDA
-    color_map      : {class_name: hex_color}
-    output_base    : path without extension
-    fmt            : 'png'|'pdf'|'tiff'
-    """
+def generate_cladogram(nodes, present_ranks, biomarkers_df, color_map, output_base, fmt, title_suffix=''):
     print(f"    [*] Drawing cladogram → {output_base}_cladogram")
-
-    # Annotate significant nodes
-    sig_lookup = {}   # name_lower → (cls, abs_lda)
+    sig_lookup = {}
     for _, row in biomarkers_df.iterrows():
         sig_lookup[row['Feature'].strip().lower()] = (row['Class'], row['Abs_LDA'])
 
@@ -389,20 +272,13 @@ def generate_cladogram(nodes, present_ranks, biomarkers_df, color_map,
             node['color'] = color_map.get(cls, '#888888')
             node['lda']   = lda
             n_marked += 1
-    print(f"    [*] Nodes marked as significant: {n_marked}")
 
-    # Assign angles to entire tree
     _assign_angles('__root__', nodes, 0, 2 * np.pi)
 
-    # Radii per rank level
     N_RINGS      = len(present_ranks)
-    R_STEP       = 1.0 / (N_RINGS + 1)       # gap between rings
+    R_STEP       = 1.0 / (N_RINGS + 1)
     rank_radius  = {r: (i + 1) * R_STEP for i, r in enumerate(present_ranks)}
-    ROOT_R       = 0.0
 
-    # ----------------------------------------------------------------
-    # Figure
-    # ----------------------------------------------------------------
     fig_size = max(14, N_RINGS * 2.5 + 4)
     fig, ax  = plt.subplots(figsize=(fig_size, fig_size))
     fig.patch.set_facecolor('white')
@@ -410,20 +286,15 @@ def generate_cladogram(nodes, present_ranks, biomarkers_df, color_map,
     ax.set_aspect('equal')
     ax.axis('off')
 
-    # Draw faint ring guide circles
     for r in rank_radius.values():
-        circle = plt.Circle((0, 0), r, color='#EEEEEE',
-                             fill=False, linewidth=0.6, zorder=1)
+        circle = plt.Circle((0, 0), r, color='#EEEEEE', fill=False, linewidth=0.6, zorder=1)
         ax.add_patch(circle)
 
-    # ----------------------------------------------------------------
-    # Draw edges and nodes
-    # ----------------------------------------------------------------
     MAX_LDA      = max((n.get('lda', 0) for n in nodes.values() if n.get('lda', 0) > 0), default=1.0)
-    NODE_MIN     = 30    # pt² for non-significant
-    NODE_MAX     = 350   # pt² for max-LDA significant
+    NODE_MIN     = 30
+    NODE_MAX     = 350
 
-    drawn_labels = []  # (x, y, text, color) — for collision-aware labels
+    drawn_labels = []
 
     for nid, node in nodes.items():
         if nid == '__root__':
@@ -434,7 +305,6 @@ def generate_cladogram(nodes, present_ranks, biomarkers_df, color_map,
         y   = r * np.sin(ang)
         node['xy'] = (x, y)
 
-        # Edge to parent
         par_id = node['parent']
         if par_id and par_id in nodes:
             par = nodes[par_id]
@@ -442,10 +312,8 @@ def generate_cladogram(nodes, present_ranks, biomarkers_df, color_map,
                 px, py = 0.0, 0.0
             else:
                 px, py = par.get('xy', (0.0, 0.0))
-            ax.plot([px, x], [py, y],
-                    color='#CCCCCC', linewidth=0.7, zorder=2, solid_capstyle='round')
+            ax.plot([px, x], [py, y], color='#CCCCCC', linewidth=0.7, zorder=2, solid_capstyle='round')
 
-        # Node circle
         is_sig  = node['cls'] is not None
         color   = node['color']
         size    = NODE_MIN
@@ -453,23 +321,16 @@ def generate_cladogram(nodes, present_ranks, biomarkers_df, color_map,
             size = NODE_MIN + (NODE_MAX - NODE_MIN) * (node['lda'] / MAX_LDA)
         edgec   = '#555555' if is_sig else '#AAAAAA'
         lw      = 1.2      if is_sig else 0.5
-        ax.scatter(x, y, s=size, c=color, edgecolors=edgec,
-                   linewidths=lw, zorder=4)
+        ax.scatter(x, y, s=size, c=color, edgecolors=edgec, linewidths=lw, zorder=4)
 
-        # Collect labels for significant nodes
         if is_sig:
             drawn_labels.append((x, y, node['name'], color, node['lda']))
 
-    # ----------------------------------------------------------------
-    # Labels for significant nodes — radial placement with collision avoidance
-    # ----------------------------------------------------------------
-    LABEL_R_PAD = 0.06   # extra radial push beyond node centre
+    LABEL_R_PAD = 0.06
     FONT_SIZE   = 7.5
 
-    # Sort by angle to make collision detection meaningful
     drawn_labels.sort(key=lambda t: np.arctan2(t[1], t[0]))
-
-    placed = []  # (x_text, y_text)
+    placed = []
 
     for (nx, ny, name, color, lda) in drawn_labels:
         dist  = np.hypot(nx, ny)
@@ -479,7 +340,6 @@ def generate_cladogram(nodes, present_ranks, biomarkers_df, color_map,
         tx = r_txt * np.cos(ang)
         ty = r_txt * np.sin(ang)
 
-        # Push away from already-placed labels
         for attempt in range(20):
             too_close = any(np.hypot(tx - px, ty - py) < 0.07 for px, py in placed)
             if not too_close:
@@ -495,43 +355,24 @@ def generate_cladogram(nodes, present_ranks, biomarkers_df, color_map,
         if tx < 0:
             rotation += 180
 
-        ax.text(tx, ty, name,
-                ha=ha, va='center',
-                fontsize=FONT_SIZE, fontweight='bold',
-                color=color, rotation=rotation,
-                rotation_mode='anchor', zorder=5)
+        ax.text(tx, ty, name, ha=ha, va='center', fontsize=FONT_SIZE, fontweight='bold',
+                color=color, rotation=rotation, rotation_mode='anchor', zorder=5)
+        ax.plot([nx, tx], [ny, ty], color=color, linewidth=0.5, linestyle=':', zorder=3, alpha=0.6)
 
-        # Leader dot-line from node to text
-        ax.plot([nx, tx], [ny, ty],
-                color=color, linewidth=0.5, linestyle=':', zorder=3, alpha=0.6)
-
-    # ----------------------------------------------------------------
-    # Ring level labels (rank names on the right side)
-    # ----------------------------------------------------------------
     for rank, r in rank_radius.items():
-        ax.text(r * 1.01, -0.015, rank.capitalize(),
-                fontsize=7, color='#999999', ha='left', va='top',
-                style='italic', zorder=6)
+        ax.text(r * 1.01, -0.015, rank.capitalize(), fontsize=7, color='#999999', ha='left', va='top', style='italic', zorder=6)
 
-    # ----------------------------------------------------------------
-    # Legend
-    # ----------------------------------------------------------------
     patches = [mpatches.Patch(color=c, label=g) for g, c in color_map.items()]
-    ax.legend(handles=patches, title='Class', title_fontsize=9,
-              fontsize=8.5, loc='lower left',
-              bbox_to_anchor=(0.01, 0.01),
-              frameon=True, framealpha=0.9, edgecolor='#CCCCCC')
+    ax.legend(handles=patches, title='Class', title_fontsize=9, fontsize=8.5, loc='lower left',
+              bbox_to_anchor=(0.01, 0.01), frameon=True, framealpha=0.9, edgecolor='#CCCCCC')
 
-    # Size legend (LDA scale)
     for lda_val, label in [(2, '|LDA|=2'), (3, '|LDA|=3'), (4, '|LDA|=4')]:
         if lda_val <= MAX_LDA + 0.5:
             size = NODE_MIN + (NODE_MAX - NODE_MIN) * (lda_val / MAX_LDA)
             ax.scatter([], [], s=size, c='#888888', edgecolors='#555555',
                        linewidths=1.0, label=label, zorder=0)
-    ax.legend(handles=patches + [
-        mpatches.Patch(color='w', label='─── Node size = |LDA|')
-    ], title='Class', title_fontsize=9, fontsize=8.5,
-              loc='lower left', bbox_to_anchor=(0.01, 0.01),
+    ax.legend(handles=patches + [mpatches.Patch(color='w', label='─── Node size = |LDA|')],
+              title='Class', title_fontsize=9, fontsize=8.5, loc='lower left', bbox_to_anchor=(0.01, 0.01),
               frameon=True, framealpha=0.9, edgecolor='#CCCCCC')
 
     title = f'LEfSe Cladogram{title_suffix}'
@@ -547,25 +388,15 @@ def generate_cladogram(nodes, present_ranks, biomarkers_df, color_map,
     print(f"    [*] Cladogram saved: {cladogram_base}.{fmt}")
     plt.close(fig)
 
-
-# ===========================================================================
-# Main LEfSe pipeline
-# ===========================================================================
-
 def run_lefse(df_rank, rank_level, metadata_path, category_col, sample_id_col,
-              output_base, fmt,
-              lda_threshold=2.0, kw_alpha=0.05, wilcox_alpha=0.05,
-              top_n=30, sort_by_lda=False, label_col=None, no_table=False,
-              df_full=None, no_cladogram=False, tree_threshold=0.95):
+              output_base, fmt, lda_threshold=2.0, kw_alpha=0.05, wilcox_alpha=0.05,
+              top_n=3, sort_by_lda=False, label_col=None, no_table=False,
+              df_full=None, no_cladogram=True, tree_threshold=0.95):
 
     print(f"[*] Running LEfSe → {output_base}")
 
-    # -------------------------------------------------------------------
-    # 1. Resolve feature labels
-    # -------------------------------------------------------------------
     df_work = df_rank.copy()
     if label_col and label_col in df_work.columns:
-        print(f"    [*] Feature labels from column: '{label_col}'")
         df_work.index = df_work[label_col].astype(str)
     elif 'Name' in df_work.columns:
         df_work.index = df_work['Name'].astype(str)
@@ -580,97 +411,57 @@ def run_lefse(df_rank, rank_level, metadata_path, category_col, sample_id_col,
 
     df_counts = df_work[sample_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
 
-    # -------------------------------------------------------------------
-    # 2. Load metadata & align samples
-    # -------------------------------------------------------------------
     if metadata_path.endswith('.csv'):
         meta = pd.read_csv(metadata_path)
     else:
         meta = pd.read_excel(metadata_path)
 
-    # ------------------------------------------------------------------
-    # Sample-name normalisation — mirrors 05_generate_PCoA_PieChart.py
-    # Strips lane/run suffixes (e.g. _L6, _L8) by splitting on '_' and
-    # comparing only the first token, case-insensitively.
-    # ------------------------------------------------------------------
     meta[sample_id_col] = meta[sample_id_col].astype(str).str.strip().str.lower()
     meta_map = dict(zip(meta[sample_id_col], meta[category_col].astype(str)))
 
     all_samples   = list(df_counts.columns)
-    meta_keys     = list(meta_map.keys())   # already lowercased
+    meta_keys     = list(meta_map.keys())
     groups_raw    = []
     for name in all_samples:
         clean = name.split('_')[0].strip().lower()
         val   = meta_map.get(clean, 'Unknown')
 
-        # Fallback: longest metadata key that is a prefix of `clean`
         if val in ('Unknown', 'nan'):
             candidates = [k for k in meta_keys if clean.startswith(k)]
             if candidates:
                 best_key = max(candidates, key=len)
                 val      = meta_map[best_key]
-                print(f"    [~] Prefix match: '{name}' → '{best_key}' (group: {val})")
 
         if val == 'nan':
             val = 'Unknown'
-        if val == 'Unknown':
-            print(f"    [!] Topological Mismatch: '{name}' (cleaned: '{clean}') NOT FOUND in metadata.")
         groups_raw.append(val)
 
-    # Drop unmatched samples
     keep_mask      = [g != 'Unknown' for g in groups_raw]
-    dropped        = [s for s, k in zip(all_samples, keep_mask) if not k]
     common_samples = [s for s, k in zip(all_samples, keep_mask) if k]
     groups         = [g for g, k in zip(groups_raw,  keep_mask) if k]
 
-    if dropped:
-        print(f"    [!] Dropped {len(dropped)} unmatched sample(s): {dropped}")
     if len(common_samples) < 3:
         raise ValueError("CRITICAL: fewer than 3 samples matched metadata — cannot run LEfSe.")
 
     df_counts = df_counts[common_samples]
-
     unique_groups = sorted(set(groups))
     n_groups      = len(unique_groups)
-    print(f"    [*] Groups ({n_groups}): {unique_groups}")
-    print(f"    [*] Samples matched: {len(common_samples)}")
 
-    # -------------------------------------------------------------------
-    # 3. Relative abundance & filter zero-variance features
-    # -------------------------------------------------------------------
-    ra_df = relative_abundance(df_counts)
-    ra_df = ra_df.fillna(0)
+    ra_df = relative_abundance(df_counts).fillna(0)
     ra_df = ra_df.loc[ra_df.var(axis=1) > 0]
-    print(f"    [*] Features after zero-variance filter: {len(ra_df)}")
 
-    # -------------------------------------------------------------------
-    # 4. Kruskal-Wallis
-    # -------------------------------------------------------------------
     kw_results = kruskal_wallis_test(ra_df, groups, alpha=kw_alpha)
-    print(f"    [*] Features passing Kruskal-Wallis (p<{kw_alpha}): {len(kw_results)}")
     if not kw_results:
         print("    [!] No features passed Kruskal-Wallis. Exiting.")
         return
 
-    # -------------------------------------------------------------------
-    # 5. Pairwise Wilcoxon
-    # -------------------------------------------------------------------
-    winning_classes = wilcoxon_pairwise_test(
-        ra_df, groups, list(kw_results.keys()), alpha=wilcox_alpha
-    )
-    print(f"    [*] Features passing Wilcoxon (p<{wilcox_alpha}): {len(winning_classes)}")
+    winning_classes = wilcoxon_pairwise_test(ra_df, groups, list(kw_results.keys()), alpha=wilcox_alpha)
     if not winning_classes:
         print("    [!] No features passed Wilcoxon. Exiting.")
         return
 
-    # -------------------------------------------------------------------
-    # 6. LDA scores
-    # -------------------------------------------------------------------
     lda_scores = compute_lda_scores(ra_df, groups, list(winning_classes.keys()), winning_classes)
 
-    # -------------------------------------------------------------------
-    # 7. Build results table & apply LDA threshold
-    # -------------------------------------------------------------------
     records = []
     for feat, winner in winning_classes.items():
         H, kw_p = kw_results[feat]
@@ -693,14 +484,16 @@ def run_lefse(df_rank, rank_level, metadata_path, category_col, sample_id_col,
         return
 
     df_results = pd.DataFrame(records).sort_values('Abs_LDA', ascending=False)
-    print(f"    [*] Significant biomarkers (|LDA| >= {lda_threshold}): {len(df_results)}")
+    
+    # MODIFIED: Partition strategy for exactly k biomarkers per category
+    if top_n > 0:
+        # Sort by Abs_LDA descending to ensure head() grabs the strongest effect sizes
+        df_plot = df_results.sort_values('Abs_LDA', ascending=False)
+        # Apply the partition constraint
+        df_plot = df_plot.groupby('Class').head(top_n).copy()
+    else:
+        df_plot = df_results.copy()
 
-    # Subset to top_n
-    df_plot = df_results.head(top_n).copy()
-
-    # -------------------------------------------------------------------
-    # 8. Group-level mean RA table (extra sheet)
-    # -------------------------------------------------------------------
     group_means = []
     for feat in df_plot['Feature']:
         row = {'Feature': feat}
@@ -710,15 +503,11 @@ def run_lefse(df_rank, rank_level, metadata_path, category_col, sample_id_col,
         group_means.append(row)
     df_group_means = pd.DataFrame(group_means)
 
-    # -------------------------------------------------------------------
-    # 9. Plot — horizontal bar chart
-    # -------------------------------------------------------------------
     color_map = {g: COLORS[i % len(COLORS)] for i, g in enumerate(unique_groups)}
 
     if sort_by_lda:
         df_plot = df_plot.sort_values('LDA_score')
     else:
-        # Group bars by winning class, then by LDA within class
         df_plot = df_plot.sort_values(['Class', 'Abs_LDA'], ascending=[True, False])
 
     n_bars   = len(df_plot)
@@ -727,7 +516,6 @@ def run_lefse(df_rank, rank_level, metadata_path, category_col, sample_id_col,
     fig.patch.set_facecolor('white')
     ax.set_facecolor('#F7F7F7')
 
-    # Draw bars
     for i, row in enumerate(df_plot.itertuples()):
         lda_val = row.LDA_score
         color   = color_map[row.Class]
@@ -735,127 +523,81 @@ def run_lefse(df_rank, rank_level, metadata_path, category_col, sample_id_col,
         bar_dir = 1 if lda_val >= 0 else -1
 
         if not sort_by_lda:
-            ax.barh(i, bar_val, color=color, edgecolor='white', linewidth=0.5,
-                    height=0.72, zorder=3)
+            ax.barh(i, bar_val, color=color, edgecolor='white', linewidth=0.5, height=0.72, zorder=3)
         else:
-            ax.barh(i, lda_val, color=color, edgecolor='white', linewidth=0.5,
-                    height=0.72, zorder=3)
+            ax.barh(i, lda_val, color=color, edgecolor='white', linewidth=0.5, height=0.72, zorder=3)
 
-        # Score label inside/outside bar
         label_x = bar_val + 0.05 if not sort_by_lda else (lda_val + 0.05 * bar_dir)
-        ax.text(label_x, i, f"{row.Abs_LDA:.2f}",
-                va='center', ha='left', fontsize=8.5, color='#333333', zorder=4)
+        ax.text(label_x, i, f"{row.Abs_LDA:.2f}", va='center', ha='left', fontsize=8.5, color='#333333', zorder=4)
 
-    # Feature labels on y-axis
     ax.set_yticks(range(n_bars))
     ax.set_yticklabels(df_plot['Feature'].tolist(), fontsize=9.5)
 
-    # Axis styling
     ax.axvline(0, color='#888888', linewidth=0.8, linestyle='--', zorder=2)
     ax.set_xlabel('LDA Score (log₁₀)', fontsize=12, labelpad=8)
-    ax.set_title(
-        f'LEfSe — {rank_level.capitalize()} level   '
-        f'[|LDA| ≥ {lda_threshold} | KW p<{kw_alpha} | Wilcoxon p<{wilcox_alpha}]',
-        fontsize=13, fontweight='bold', pad=14
-    )
+    ax.set_title(f'LEfSe — {rank_level.capitalize()} level   \n[|LDA| ≥ {lda_threshold} | KW p<{kw_alpha} | Wilcoxon p<{wilcox_alpha}]',
+                 fontsize=13, fontweight='bold', pad=14)
     ax.spines[['top', 'right']].set_visible(False)
     ax.spines[['left', 'bottom']].set_color('#CCCCCC')
     ax.tick_params(axis='both', which='both', length=0)
     ax.grid(axis='x', color='white', linewidth=1.2, zorder=1)
     ax.set_xlim(left=0 if not sort_by_lda else None)
 
-    # Legend — one patch per group
     patches = [mpatches.Patch(color=color_map[g], label=g) for g in unique_groups]
-    ax.legend(handles=patches, title='Class', title_fontsize=10,
-              fontsize=9.5, loc='lower right',
+    ax.legend(handles=patches, title='Class', title_fontsize=10, fontsize=9.5, loc='lower right',
               frameon=True, framealpha=0.9, edgecolor='#CCCCCC')
 
-    # Subtitle: n biomarkers found
-    ax.text(0.01, 1.01, f"n = {len(df_results)} biomarkers | showing top {n_bars}",
+    # MODIFIED: Dynamically update the subtitle based on class stratification
+    subtitle_text = f"n = {len(df_results)} total significant biomarkers"
+    if top_n > 0:
+        subtitle_text += f" | showing top {top_n} per class"
+    else:
+        subtitle_text += f" | showing all"
+        
+    ax.text(0.01, 1.01, subtitle_text,
             transform=ax.transAxes, fontsize=9, color='#666666', ha='left')
 
     plt.tight_layout(pad=1.5)
-
     export_topological_projection(fig, output_base, fmt)
-    print(f"    [*] Plot saved: {output_base}.{fmt}")
     plt.close(fig)
 
-    # -------------------------------------------------------------------
-    # 10. Export Excel
-    # -------------------------------------------------------------------
     if not no_table:
-        export_summary_table(
-            df_results, output_base,
-            sheet_name='LEfSe_Biomarkers',
-            extra_sheets={
-                'Group_Mean_RelAbund': df_group_means,
-            }
-        )
+        export_summary_table(df_results, output_base, sheet_name='LEfSe_Biomarkers',
+                             extra_sheets={'Group_Mean_RelAbund': df_group_means})
 
-    # -------------------------------------------------------------------
-    # 11. Cladogram
-    # -------------------------------------------------------------------
     if not no_cladogram:
         src = df_full if df_full is not None else df_rank
         nodes, present_ranks = build_taxonomy_tree(src, common_samples, label_col=label_col, tree_threshold=tree_threshold)
         if present_ranks:
-            generate_cladogram(
-                nodes, present_ranks, df_results, color_map,
-                output_base, fmt,
-                title_suffix=f' — {rank_level.capitalize()} level'
-            )
-        else:
-            print("    [!] Could not build taxonomy tree — skipping cladogram.")
-
-
-# ===========================================================================
-# Entry point
-# ===========================================================================
+            generate_cladogram(nodes, present_ranks, df_results, color_map, output_base, fmt, title_suffix=f' — {rank_level.capitalize()} level')
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='LEfSe — Linear Discriminant Analysis Effect Size for Kraken2 pipeline output.'
-    )
-    parser.add_argument('-d',  '--data',          type=str, required=True,
-                        help='Input Excel file (taxonomic_classification_clean.xlsx).')
-    parser.add_argument('-r',  '--rank',           type=str, required=True,
-                        help='Taxonomic rank to analyse (e.g. genus, species, domain).')
-    parser.add_argument('-m',  '--metadata',       type=str, required=True,
-                        help='Metadata CSV or Excel with sample IDs and group column.')
-    parser.add_argument('-c',  '--category',       type=str, required=True,
-                        help='Metadata column to group samples by.')
-    parser.add_argument('-id', '--sample_id',      type=str, default='SampleID',
-                        help='Metadata column for sample IDs (default: SampleID).')
-    parser.add_argument('-fmt','--format',         type=str,
-                        choices=['pdf', 'png', 'tiff'], default='pdf',
-                        help='Output format: pdf, png, or tiff (default: pdf).')
-    parser.add_argument('-o',  '--output',         type=str, default=None,
-                        help='Custom output base name (no extension).')
-    parser.add_argument('-org','--organism',       type=str, default='Microbiome',
-                        help='Label prefix for output files.')
-    parser.add_argument('--lda_threshold',         type=float, default=2.0,
-                        help='Minimum |LDA| score cut-off (default: 2.0).')
-    parser.add_argument('--kw_alpha',              type=float, default=0.05,
-                        help='Kruskal-Wallis significance cut-off (default: 0.05).')
-    parser.add_argument('--wilcox_alpha',          type=float, default=0.05,
-                        help='Wilcoxon rank-sum significance cut-off (default: 0.05).')
-    parser.add_argument('--top',                   type=int,   default=30,
-                        help='Maximum number of biomarkers to display (default: 30).')
-    parser.add_argument('--rank_by_lda',           action='store_true',
-                        help='Sort bars by signed LDA score instead of grouping by class.')
-    parser.add_argument('--label_col',             type=str, default=None,
-                        help='Column to use as feature label (e.g. "Name", "Scientific Name").')
-    parser.add_argument('--tree_threshold',        type=float, default=0.95,
-                        help='Pearson correlation threshold for early exit in tree building (default: 0.95).')
-    parser.add_argument('--no_cladogram',          action='store_true',
-                        help='Skip cladogram plot.')
-    parser.add_argument('--no_table',              action='store_true',
-                        help='Skip Excel table export.')
+    parser = argparse.ArgumentParser(description='LEfSe — Linear Discriminant Analysis Effect Size.')
+    parser.add_argument('-d',  '--data',          type=str, required=True)
+    parser.add_argument('-r',  '--rank',           type=str, required=True)
+    parser.add_argument('-m',  '--metadata',       type=str, required=True)
+    parser.add_argument('-c',  '--category',       type=str, required=True)
+    parser.add_argument('-id', '--sample_id',      type=str, default='SampleID')
+    parser.add_argument('-fmt','--format',         type=str, choices=['pdf', 'png', 'tiff'], default='pdf')
+    parser.add_argument('-o',  '--output',         type=str, default=None)
+    parser.add_argument('-org','--organism',       type=str, default='Microbiome')
+    parser.add_argument('--lda_threshold',         type=float, default=2.0)
+    parser.add_argument('--kw_alpha',              type=float, default=0.05)
+    parser.add_argument('--wilcox_alpha',          type=float, default=0.05)
+    # MODIFIED: Top now refers to top N PER CATEGORY. Default changed to 3.
+    parser.add_argument('--top',                   type=int,   default=3,
+                        help='Maximum number of biomarkers to display PER CATEGORY (default: 3. Set to 0 for ALL).')
+    parser.add_argument('--rank_by_lda',           action='store_true')
+    parser.add_argument('--label_col',             type=str, default=None)
+    parser.add_argument('--tree_threshold',        type=float, default=0.95)
+    # MODIFIED: Cladogram is now disabled by default. You must pass this flag to generate it.
+    parser.add_argument('--cladogram',             action='store_true',
+                        help='Include cladogram plot (disabled by default to avoid clutter).')
+    parser.add_argument('--no_table',              action='store_true')
 
     args = parser.parse_args()
 
-    OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              '..', 'results', 'LEfSe')
+    OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'results', 'LEfSe')
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     safe_org  = args.organism.replace(' ', '_')
@@ -864,9 +606,6 @@ def main():
 
     df      = pd.read_excel(args.data, sheet_name=0)
     df_rank = df[df['Rank'].str.lower() == args.rank.lower()].copy()
-
-    if df_rank.empty:
-        raise ValueError(f"No data found for rank: {args.rank}")
 
     run_lefse(
         df_rank       = df_rank,
@@ -884,10 +623,9 @@ def main():
         label_col     = args.label_col,
         no_table      = args.no_table,
         df_full       = df,
-        no_cladogram  = args.no_cladogram,
+        no_cladogram  = not args.cladogram, # Pass the inverted flag state
         tree_threshold= args.tree_threshold,
     )
-
 
 if __name__ == '__main__':
     main()
