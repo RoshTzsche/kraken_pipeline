@@ -1,33 +1,46 @@
-# --- Archivos de sistema y Python ---
-.DS_Store
+```gitignore
+# Dependencies
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+.Python
+venv/
+env/
+ENV/
+.venv/
+.env
+.env.local
+.env.*
+.env~*
+.env.local~
+*.env
+*.env.local
+*.env.*
+*.env~*
+*.env.local~
 
-# --- DATOS (Ignorar contenido, mantener estructura) ---
+# Build artifacts
+build/
+dist/
+*.egg-info/
 
-# 1. Datos crudos
-data/raw_fastq/*
-!data/raw_fastq/.gitkeep
+# Logs
+*.log
 
-# 2. Referencias FASTA
-data/fasta_ref/*
-!data/fasta_ref/.gitkeep
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 
-# 3. Taxonomía Central (¡CRÍTICO! Son 60GB)
-data/taxonomy/*
-!data/taxonomy/.gitkeep
-
-# 4. Bases de datos construidas
-data/dbs/*
-!data/dbs/.gitkeep
-
-# --- RESULTADOS ---
-results/reports/*
-!results/reports/.gitkeep
-
-results/final_tables/*
-!results/final_tables/.gitkeep
-*.xlsx
-*.pdf
-*.tif
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+```
