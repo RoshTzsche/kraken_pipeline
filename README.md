@@ -78,12 +78,21 @@ kraken_pipeline/
 │   └── final_tables/          # Excel summary files
 │
 ├── scripts/
+│   ├── 00_download_ncbi.py          # Downloads NCBI taxonomy database
 │   ├── 01_build_db.sh               # Builds isolated DB from fasta_ref/<DB_NAME>
 │   ├── 02_run_kraken.sh             # Batch classifies raw samples
 │   ├── 03_generate_table.py         # Consolidates reports into an Excel matrix
 │   ├── 04_generate_Barplots.py      # Standardized relative abundance barplots
 │   ├── 05_generate_PCoA_PieChart.py # Bray-Curtis PCoA & spatial modeling
-│   └── 06_generate_Violin_ANOVA.py  # Parametric significance testing & distributions
+│   ├── 06_generate_Violin_ANOVA.py  # Parametric significance testing & distributions
+│   ├── 07_rarefaction_curve.py      # Alpha diversity rarefaction curves
+│   ├── 08_generate_lefse.py         # LEfSe biomarker discovery analysis
+│   ├── 09_metadata_boxplot.py       # Metadata-driven boxplot visualizations
+│   ├── 10_summarize_outputs.py      # Aggregates classification statistics
+│   ├── run_alpha.sh                 # Parallel execution for alpha diversity
+│   ├── run_barpolots.sh             # Parallel execution for barplots
+│   ├── run_pcoa.sh                  # Parallel execution for PCoA
+│   └── runtaxa.sh                   # Parallel execution for taxa analysis
 │
 ├── img/                       # Documentation assets
 ├── requirements.txt
@@ -94,6 +103,14 @@ kraken_pipeline/
 ---
 
 ## Execution Guide
+
+### Phase 0: NCBI Taxonomy Download (Optional)
+Download reference sequences from BOLD Systems for specific taxa and geographical regions. Includes presets for UK Fish and UK Plants.
+
+```bash
+cd scripts/
+python3 00_download_ncbi.py
+```
 
 ### Phase 1: Database Construction
 Establish a reference directory corresponding to your project nomenclature and populate it with `.fasta` sequence assemblies.
@@ -176,6 +193,100 @@ python 06_generate_Violin_ANOVA.py \
   -c Month \
   -v "DO,pH,Turbidity,ORP" \
   -fmt tiff
+```
+
+### 4. Alpha Diversity Rarefaction Curves (`07_rarefaction_curve.py`)
+Generates stochastic rarefaction curves to assess sampling depth sufficiency and estimate species richness. Uses Monte Carlo resampling to compute mean richness and standard deviation at incremental sequencing depths.
+
+**Execution Example:**
+```bash
+python 07_rarefaction_curve.py \
+  -d ../results/final_tables/Taxonomy_PLANTS_Cumulative_Reads.xlsx \
+  -r genus \
+  -org Plants \
+  --depth 10000 \
+  --steps 50 \
+  --iter 10 \
+  -fmt png
+```
+
+### 5. LEfSe Biomarker Discovery (`08_generate_lefse.py`)
+Implements Linear Discriminant Analysis Effect Size (LEfSe) for identifying differentially abundant taxa between groups. Combines Kruskal-Wallis test, Wilcoxon test, and LDA scoring.
+
+**Execution Example:**
+```bash
+python 08_generate_lefse.py \
+  -d ../results/final_tables/taxonomic_classification_clean.xlsx \
+  -r genus \
+  -m "../data/Metadata_Inferred.xlsx" \
+  -c Treatment \
+  -id SampleID \
+  --lda_threshold 2.0 \
+  --top 5 \
+  -fmt png
+```
+
+### 6. Metadata Boxplot Analysis (`09_metadata_boxplot.py`)
+Generates boxplot visualizations for metadata-driven comparisons. Supports pairwise mode for exhaustive two-group comparisons.
+
+**Execution Example:**
+```bash
+python 09_metadata_boxplot.py \
+  -d ../results/final_tables/taxonomic_classification_clean.xlsx \
+  -r genus \
+  -m "../data/Metadata_Inferred.xlsx" \
+  -c Treatment \
+  -id SampleID \
+  --pairwise \
+  -fmt png
+```
+
+### 7. Output Summarization (`10_summarize_outputs.py`)
+Aggregates classification statistics from multiple Excel outputs into a master summary table, including unclassified, classified, and total read counts per sample and database.
+
+**Execution Example:**
+```bash
+python 10_summarize_outputs.py \
+  -i ../results/final_tables/ \
+  -o ../results/summaries/
+```
+
+---
+
+## Parallel Execution Wrappers
+
+The pipeline includes bash scripts for parallelized execution across multiple taxonomic ranks and thresholds using GNU Parallel.
+
+### Alpha Diversity Wrapper (`run_alpha.sh`)
+Executes violin plot generation for alpha diversity analysis across all Excel files and taxonomic ranks in parallel.
+
+```bash
+cd scripts/
+./run_alpha.sh
+```
+
+### Barplot Wrapper (`run_barpolots.sh`)
+Generates relative abundance barplots for multiple thresholds and taxonomic ranks simultaneously.
+
+```bash
+cd scripts/
+./run_barpolots.sh
+```
+
+### PCoA Wrapper (`run_pcoa.sh`)
+Processes PCoA analysis across multiple taxonomic ranks (species, genus, family, phylum) in parallel.
+
+```bash
+cd scripts/
+./run_pcoa.sh
+```
+
+### Taxa Analysis Wrapper (`runtaxa.sh`)
+Executes taxa abundance violin plots with multiple thresholds and ranks.
+
+```bash
+cd scripts/
+./runtaxa.sh
 ```
 
 ---
