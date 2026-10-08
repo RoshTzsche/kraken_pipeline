@@ -1,4 +1,6 @@
 #!/bin/bash
+set -euo pipefail
+cd -- "$(dirname -- "$0")"
 
 INPUT_DIR="../results/final_tables"
 METADATA="../data/metadata.xlsx"
@@ -31,14 +33,15 @@ parallel --verbose --jobs 4 \
   python 04_generate_Barplots.py \
     -d {1} \
     -m "$METADATA" \
-    -c Treatment \
+    -c Time \
     -r {2} \
     -t {3} \
     -org '$(get_org_name "{1}")' \
     -fmt png \
-    -ord "Control" "Partial" "Untreated" \
+    -ord "0d" "7d" "30d" \
     :::: - \
     ::: phylum \
     ::: 0.005 0.01 0.02 0.007
 
 echo "¡Procesamiento paralelo completado!"
+

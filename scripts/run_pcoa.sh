@@ -1,4 +1,6 @@
 #!/bin/bash
+set -euo pipefail
+cd -- "$(dirname -- "$0")"
 
 INPUT_DIR="../results/final_tables"
 METADATA="../data/metadata.xlsx"
@@ -35,7 +37,7 @@ parallel --verbose --jobs 4 \
     -d {1} \
     -r {2} \
     -m "$METADATA" \
-    -c Treatment \
+    -c Time \
     -id SampleID \
     --mode pcoa \
     -fmt png \

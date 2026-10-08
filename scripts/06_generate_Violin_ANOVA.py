@@ -1,3 +1,4 @@
+from analysis_support import read_frame
 import argparse
 import os
 import pandas as pd
@@ -12,6 +13,8 @@ from itertools import combinations
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
 from statsmodels.stats.multitest import multipletests
 import math
+from analysis_support import (count_matrix, metadata_groups, group_order as ordered_groups,
+                              compact_letters, rank_comparisons, write_run_record)
 
 # ---------------------------------------------------------------------------
 # Unified color palette — identical across all pipeline scripts (04, 05, 07)
@@ -107,13 +110,15 @@ def calculate_cld(df, val_col, group_col):
         return {g: "a" for g in groups}
 
     group_data = [df[df[group_col] == g][val_col].dropna().values for g in groups]
-    group_data = [g for g in group_data if len(g) > 0]
+    if any(len(g) < 2 for g in group_data):
+        return {g: "" for g in groups}
 
     if len(group_data) < 2 or df[val_col].nunique() <= 1:
         return {g: "a" for g in groups}
 
     _, p_val = stats.f_oneway(*group_data)
-    if p_val > 0.05 or pd.isna(p_val):
+    gate_p = df.attrs.get('omnibus_p_adjusted', p_val)
+    if gate_p > 0.05 or pd.isna(gate_p):
         return {g: "a" for g in groups}
 
     tukey      = pairwise_tukeyhsd(endog=df[val_col], groups=df[group_col], alpha=0.05)
@@ -124,19 +129,8 @@ def calculate_cld(df, val_col, group_col):
             sig_matrix.loc[g1, g2] = True
             sig_matrix.loc[g2, g1] = True
 
-    letters      = {g: "" for g in groups}
-    current_char = ord("a")
-    for g1 in groups:
-        if not letters[g1]:
-            letter = chr(current_char)
-            current_char += 1
-            letters[g1] += letter
-            for g2 in groups:
-                if g1 != g2 and not sig_matrix.loc[g1, g2]:
-                    if letter not in letters[g2]:
-                        letters[g2] += letter
-
-    return letters if any(letters.values()) else {g: "a" for g in groups}
+    rejected = [(a, b) for a, b in combinations(groups, 2) if sig_matrix.loc[a, b]]
+    return compact_letters(groups, rejected)
 
 
 # ---------------------------------------------------------------------------
@@ -144,73 +138,8 @@ def calculate_cld(df, val_col, group_col):
 # (non-parametric, for alpha diversity mode)
 # ---------------------------------------------------------------------------
 def compute_kruskal_cld(df, val_col, group_col):
-    """
-    Non-parametric CLD via Kruskal-Wallis omnibus test followed by pairwise
-    Mann-Whitney U comparisons with Bonferroni correction.
-    Groups sharing a letter are NOT significantly different from each other.
-    """
-    # Sort groups by mean value descending (matches CLD convention)
-    mean_vals = df.groupby(group_col)[val_col].mean().sort_values(ascending=False)
-    groups    = mean_vals.index.tolist()
-
-    if len(groups) < 2:
-        return {g: 'a' for g in groups}
-
-    group_data  = [df[df[group_col] == g][val_col].dropna().values for g in groups]
-    valid_data  = [d for d in group_data if len(d) > 0]
-
-    if len(valid_data) < 2 or df[val_col].nunique() <= 1:
-        return {g: 'a' for g in groups}
-
-    # Kruskal-Wallis omnibus test
-    try:
-        _, kw_p = stats.kruskal(*valid_data)
-    except Exception:
-        return {g: 'a' for g in groups}
-
-    if kw_p > 0.05 or np.isnan(kw_p):
-        return {g: 'a' for g in groups}
-
-    # Pairwise Mann-Whitney U with Bonferroni correction
-    pair_list = list(combinations(range(len(groups)), 2))
-    p_values  = []
-    for i, j in pair_list:
-        d1, d2 = group_data[i], group_data[j]
-        if len(d1) < 1 or len(d2) < 1:
-            p_values.append(1.0)
-        else:
-            try:
-                _, p = stats.mannwhitneyu(d1, d2, alternative='two-sided')
-            except Exception:
-                p = 1.0
-            p_values.append(p)
-
-    if not p_values:
-        return {g: 'a' for g in groups}
-
-    reject, _, _, _ = multipletests(p_values, alpha=0.05, method='bonferroni')
-
-    # Build significance matrix
-    sig_mat = {g: {g2: False for g2 in groups} for g in groups}
-    for (i, j), rej in zip(pair_list, reject):
-        if rej:
-            sig_mat[groups[i]][groups[j]] = True
-            sig_mat[groups[j]][groups[i]] = True
-
-    # Assign CLD letters (same algorithm as calculate_cld for visual consistency)
-    letters      = {g: '' for g in groups}
-    current_char = ord('a')
-    for g1 in groups:
-        if not letters[g1]:
-            letter = chr(current_char)
-            current_char += 1
-            letters[g1] += letter
-            for g2 in groups:
-                if g1 != g2 and not sig_mat[g1][g2]:
-                    if letter not in letters[g2]:
-                        letters[g2] += letter
-
-    return letters if any(letters.values()) else {g: 'a' for g in groups}
+    renamed = df.rename(columns={group_col: 'Group'})
+    return rank_comparisons(renamed, [val_col])[2][val_col]
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +155,7 @@ def compute_alpha_diversity(counts_series):
     N      = counts.sum()
 
     if N == 0:
-        return {'Shannon': 0.0, 'Simpson': 0.0, 'Chao1': 0.0}
+        return {'Observed_Richness': 0, 'Shannon': np.nan, 'Simpson': np.nan, 'Chao1': np.nan}
 
     # Shannon H'
     p       = counts / N
@@ -245,7 +174,7 @@ def compute_alpha_diversity(counts_series):
     f2    = int(np.sum(counts == 2))   # doubletons
     chao1 = float(s_obs + (f1 * (f1 - 1)) / (2 * (f2 + 1)))
 
-    return {'Shannon': shannon, 'Simpson': simpson, 'Chao1': chao1}
+    return {'Observed_Richness': len(counts), 'Shannon': shannon, 'Simpson': simpson, 'Chao1': chao1}
 
 
 # ---------------------------------------------------------------------------
@@ -396,23 +325,23 @@ def generate_taxa_plots(data_path, metadata_path, category_col,
     print(f"[*] Generating statistical {plot_type} plots (ANOVA/Tukey) → {output_base}")
 
     # 1. Load & filter
-    df      = pd.read_excel(data_path, sheet_name=0)
+    df      = read_frame(data_path)
     df_rank = df[df["Rank"].str.lower() == rank_level.lower()].copy()
     if df_rank.empty:
         raise ValueError(f"No data found for taxonomic level: {rank_level}")
 
     meta_cols   = {"Rank", "TaxID", "original_header", "Name", "Scientific Name"}
-    sample_cols = [c for c in df_rank.columns if c not in meta_cols]
-    df_counts   = df_rank[sample_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
+    df_counts = count_matrix(df_rank)
+    sample_cols = list(df_counts.columns)
 
     # 2. Relative abundance
     if normalize:
-        rel_abund = df_counts.div(df_counts.sum(axis=0), axis=1) * 100
+        rel_abund = df_counts.div(df_counts.sum(axis=0).replace(0, np.nan), axis=1) * 100
         y_axis_label = f"{organism_name} Rel. Abundance (%)"
     else:
         rel_abund = df_counts.copy()
         y_axis_label = f"{organism_name} Raw Counts"
-    rel_abund["Taxon"] = df_rank["Name"].values
+    rel_abund["Taxon"] = df_rank['Name' if 'Name' in df_rank else 'Scientific Name'].values
 
     # 3. Threshold filter
     mean_rel    = rel_abund[sample_cols].mean(axis=1)
@@ -431,24 +360,50 @@ def generate_taxa_plots(data_path, metadata_path, category_col,
         lambda x: str(x).split("_")[0].strip().lower())
 
     # 5. Metadata
-    meta_df = (pd.read_csv(metadata_path) if metadata_path.lower().endswith(".csv")
-               else pd.read_excel(metadata_path))
-    meta_df[sample_id_col] = meta_df[sample_id_col].astype(str).str.strip().str.lower()
-
-    if pd.api.types.is_numeric_dtype(meta_df[category_col]):
-        print(f"    [*] Continuous variable '{category_col}' — Quantile Binning.")
-        meta_df[category_col] = pd.qcut(meta_df[category_col].dropna(), q=4).astype(str)
-
-    meta_map        = dict(zip(meta_df[sample_id_col],
-                               meta_df[category_col].astype(str)))
-    melted["Group"] = melted["CleanSample"].map(meta_map)
-    melted          = melted.dropna(subset=["Group"])
+    meta_map, audit = metadata_groups(sample_cols, metadata_path, category_col, sample_id_col)
+    melted["Group"] = melted["Sample"].map(meta_map)
+    melted = melted.dropna(subset=['Group', 'Abundance'])
     if melted.empty:
         raise ValueError("No Sample IDs matched between abundance data and metadata.")
 
     # 6. Group order + palette
-    group_order = sorted(melted["Group"].unique())
+    group_order = ordered_groups(melted["Group"].unique())
     palette_map = dict(zip(group_order, ggplot2_palette(len(group_order))))
+
+    taxa_tests = []
+    for taxon, sub in melted.groupby('Taxon'):
+        arrays = [sub.loc[sub.Group.eq(g), 'Abundance'].dropna().values for g in group_order]
+        f, p = np.nan, np.nan
+        if len(arrays) >= 2 and all(len(a) >= 2 for a in arrays):
+            if np.unique(np.concatenate(arrays)).size == 1:
+                f, p = 0.0, 1.0
+            else:
+                f, p = stats.f_oneway(*arrays)
+        taxa_tests.append({'Taxon': taxon, 'Test': 'ANOVA (exploratory)', 'Statistic': f, 'p_value': p})
+    taxa_tests = pd.DataFrame(taxa_tests)
+    taxa_tests['p_adjusted'] = np.nan
+    valid = taxa_tests.p_value.notna()
+    if valid.any():
+        taxa_tests.loc[valid, 'p_adjusted'] = multipletests(taxa_tests.loc[valid, 'p_value'], method='fdr_bh')[1]
+    taxa_tests.to_csv(f'{output_base}_tests.csv', index=False)
+    q_map = taxa_tests.set_index('Taxon').p_adjusted.to_dict()
+    posthoc_rows = []
+    for taxon, sub in melted.groupby('Taxon'):
+        if pd.isna(q_map[taxon]) or q_map[taxon] > 0.05:
+            continue
+        tukey = pairwise_tukeyhsd(sub.Abundance, sub.Group, alpha=0.05)
+        for idx, (a, b) in enumerate(combinations(tukey.groupsunique, 2)):
+            posthoc_rows.append({'Taxon': taxon, 'Group1': a, 'Group2': b,
+                'Mean_difference': float(tukey.meandiffs[idx]),
+                'CI_low': float(tukey.confint[idx, 0]), 'CI_high': float(tukey.confint[idx, 1]),
+                'p_adjusted': float(tukey.pvalues[idx]), 'Reject': bool(tukey.reject[idx]),
+                'Adjustment': 'Tukey HSD within taxon; BH-gated omnibus'})
+    pd.DataFrame(posthoc_rows, columns=['Taxon', 'Group1', 'Group2', 'Mean_difference',
+        'CI_low', 'CI_high', 'p_adjusted', 'Reject', 'Adjustment']).to_csv(f'{output_base}_posthoc.csv', index=False)
+    write_run_record(output_base, 'taxon_abundance_exploratory', inputs=[data_path, metadata_path],
+        parameters={'rank': rank_level, 'category': category_col, 'threshold': threshold,
+                    'omnibus': 'ANOVA; BH across displayed taxa', 'posthoc': 'Tukey HSD',
+                    'normalise': normalize}, audit=audit)
 
     # 7. Figure dimensions
     taxa_list  = list(melted["Taxon"].unique())
@@ -470,6 +425,7 @@ def generate_taxa_plots(data_path, metadata_path, category_col,
     # 8. Draw each panel
     for i, taxon in enumerate(taxa_list):
         sub_df = melted[melted["Taxon"] == taxon].dropna(subset=["Abundance"])
+        sub_df.attrs['omnibus_p_adjusted'] = q_map[taxon]
         draw_plot_panel(axes[i], sub_df, group_order, palette_map, plot_type=plot_type)
 
     # Hide unused axes
@@ -550,20 +506,20 @@ def generate_alpha_diversity_plots(data_path, metadata_path, category_col,
                                    sample_id_col, rank_level, organism_name,
                                    output_base, fmt, plot_type="violin", no_table=False):
     """
-    Generates a 1×3 multi-panel figure for three alpha diversity indices.
+    Generates a 2×2 figure for four alpha diversity indices and individual points.
     Allows for violin or boxplot based on user input.
     """
     print(f"[*] Computing alpha diversity indices (Shannon, Simpson, Chao1) → {output_base}")
 
     # 1. Load and filter data
-    df      = pd.read_excel(data_path, sheet_name=0)
+    df      = read_frame(data_path)
     df_rank = df[df['Rank'].str.lower() == rank_level.lower()].copy()
     if df_rank.empty:
         raise ValueError(f"No data found for taxonomic level: {rank_level}")
 
     meta_cols   = {'Rank', 'TaxID', 'original_header', 'Name', 'Scientific Name'}
-    sample_cols = [c for c in df_rank.columns if c not in meta_cols]
-    df_counts   = df_rank[sample_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
+    df_counts = count_matrix(df_rank)
+    sample_cols = list(df_counts.columns)
 
     # 2. Compute alpha diversity per sample from raw counts
     print(f"    [*] Computing diversity indices for {len(sample_cols)} sample(s)...")
@@ -575,19 +531,11 @@ def generate_alpha_diversity_plots(data_path, metadata_path, category_col,
     alpha_df = pd.DataFrame(records)
 
     # 3. Map metadata groups
-    meta_df = (pd.read_csv(metadata_path) if metadata_path.lower().endswith('.csv')
-               else pd.read_excel(metadata_path))
-    meta_df[sample_id_col] = meta_df[sample_id_col].astype(str).str.strip().str.lower()
-
-    if pd.api.types.is_numeric_dtype(meta_df[category_col]):
-        print(f"    [*] Continuous variable '{category_col}' — Quantile Binning (q=4).")
-        meta_df[category_col] = pd.qcut(meta_df[category_col].dropna(), q=4).astype(str)
-
-    meta_map = dict(zip(meta_df[sample_id_col], meta_df[category_col].astype(str)))
-
-    alpha_df['CleanSample'] = alpha_df['Sample'].apply(
-        lambda x: str(x).split('_')[0].strip().lower())
-    alpha_df['Group'] = alpha_df['CleanSample'].map(meta_map)
+    meta_map, audit = metadata_groups(sample_cols, metadata_path, category_col, sample_id_col)
+    alpha_df['Group'] = alpha_df['Sample'].map(meta_map)
+    zero_samples = df_counts.columns[df_counts.sum(axis=0).eq(0)].tolist()
+    audit.loc[audit.Sample.isin(zero_samples), ['Included', 'Reason']] = [False, 'no_taxonomic_detections']
+    alpha_df.loc[alpha_df.Sample.isin(zero_samples), 'Group'] = None
 
     unmatched = alpha_df['Group'].isna().sum()
     if unmatched > 0:
@@ -598,17 +546,29 @@ def generate_alpha_diversity_plots(data_path, metadata_path, category_col,
         raise ValueError("No sample IDs matched between abundance data and metadata.")
 
     # 4. Group order + color mapping from unified COLORS palette
-    group_order = sorted(alpha_df['Group'].unique())
+    group_order = ordered_groups(alpha_df['Group'].unique())
     palette_map = {g: COLORS[i % len(COLORS)] for i, g in enumerate(group_order)}
 
-    # 5. Three-panel figure
+    # 5. Four-panel figure
     metric_specs = [
+        ('Observed_Richness', 'Observed richness'),
         ('Shannon', "Shannon"),
-        ('Simpson', 'Simpson'),
+        ('Simpson', 'Simpson (1-D)'),
         ('Chao1',   'Chao1'),
     ]
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 7), facecolor='white')
+    omnibus, pairwise, cld = rank_comparisons(alpha_df, [m[0] for m in metric_specs])
+    omnibus.to_csv(f'{output_base}_omnibus.csv', index=False)
+    pairwise.to_csv(f'{output_base}_pairwise.csv', index=False)
+    alpha_df.to_csv(f'{output_base}_indices.csv', index=False)
+    write_run_record(output_base, 'alpha_diversity', inputs=[data_path, metadata_path],
+        parameters={'rank': rank_level, 'category': category_col, 'log_base': 'e',
+                    'metrics': [m[0] for m in metric_specs], 'omnibus': 'Kruskal-Wallis',
+                    'omnibus_adjustment': 'BH across four indices within rank',
+                    'posthoc': 'two-sided Mann-Whitney U; Bonferroni across pairs within index',
+                    'alpha': 0.05, 'replication': 'independent samples; verify biological design'}, audit=audit)
+    fig, axes = plt.subplots(2, 2, figsize=(13, 11), facecolor='white')
+    axes = axes.ravel()
     fig.patch.set_facecolor('white')
 
     for ax, (metric_key, metric_label) in zip(axes, metric_specs):
@@ -631,7 +591,7 @@ def generate_alpha_diversity_plots(data_path, metadata_path, category_col,
                     body.set_alpha(0.60)
             elif plot_type == "boxplot":
                 bplot = ax.boxplot(valid_data, positions=valid_pos,
-                                   widths=0.60, patch_artist=True,
+                                   widths=0.60, patch_artist=True, showfliers=False,
                                    medianprops=dict(color="black", linewidth=1.2),
                                    flierprops=dict(marker="o", markerfacecolor="black", markersize=4, alpha=0.5))
                 for idx, patch in zip(valid_pos, bplot['boxes']):
@@ -656,12 +616,12 @@ def generate_alpha_diversity_plots(data_path, metadata_path, category_col,
                     markersize=4.5, zorder=5,
                     markeredgecolor='black', markeredgewidth=0.7)
 
-        # CLD letters (Kruskal-Wallis + Mann-Whitney Bonferroni)
-        cld_input = alpha_df[['Group', metric_key]].rename(columns={metric_key: 'Value'})
-        try:
-            letters_dict = compute_kruskal_cld(cld_input, 'Value', 'Group')
-        except Exception:
-            letters_dict = {g: '' for g in group_order}
+        jitter_rng = np.random.default_rng(42)
+        for position, values in enumerate(data_by_group):
+            ax.scatter(position + jitter_rng.uniform(-0.09, 0.09, len(values)), values,
+                       color=palette_map[group_order[position]], edgecolor='black',
+                       s=24, linewidth=0.4, zorder=6)
+        letters_dict = cld[metric_key]
 
         y_vals = alpha_df[metric_key].dropna()
         y_max  = float(y_vals.max()) if len(y_vals) else 1.0
@@ -709,7 +669,7 @@ def generate_alpha_diversity_plots(data_path, metadata_path, category_col,
     # 7. Summary table
     if not no_table:
         table_df = (
-            alpha_df[['Sample', 'Group', 'Shannon', 'Simpson', 'Chao1']]
+            alpha_df[['Sample', 'Group', 'Observed_Richness', 'Shannon', 'Simpson', 'Chao1']]
             .round({'Shannon': 4, 'Simpson': 4, 'Chao1': 2})
             .sort_values(['Group', 'Sample'])
             .reset_index(drop=True)
@@ -724,7 +684,7 @@ if __name__ == "__main__":
         description=(
             "Plot Generator — two modes:\n"
             "  taxa  : per-taxon relative abundance plots (ANOVA + Tukey HSD CLD)\n"
-            "  alpha : Shannon H', Simpson (1-D), Chao1 plots (KW + Mann-Whitney CLD)"
+            "  alpha : Observed richness, Shannon H', Simpson (1-D), Chao1 plots (KW + Mann-Whitney CLD)"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter
     )

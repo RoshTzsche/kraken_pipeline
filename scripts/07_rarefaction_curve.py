@@ -1,3 +1,4 @@
+from analysis_support import read_frame
 import argparse
 import os
 import pandas as pd
@@ -6,6 +7,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.backends.backend_pdf import PdfPages
+from analysis_support import count_matrix, write_run_record
 
 # ---------------------------------------------------------------------------
 # Unified color palette — distinct colors for each sample
@@ -84,21 +86,21 @@ def export_summary_table(df, output_base, sheet_name='Summary'):
 # ---------------------------------------------------------------------------
 # Rarefaction Math & Simulation
 # ---------------------------------------------------------------------------
-def simulate_rarefaction(counts_series, depth_steps, n_iter):
+def simulate_rarefaction(counts_series, depth_steps, n_iter, rng=None):
     """
     Subsamples reads iteratively without replacement.
     Returns means and standard deviations of observed species richness.
     """
-    counts = counts_series.values.astype(int)
+    raw = counts_series.to_numpy(dtype=float)
+    if n_iter < 1 or np.any(raw < 0) or not np.isfinite(raw).all() or not np.equal(raw, np.floor(raw)).all():
+        raise ValueError("Rarefaction needs nonnegative integer counts and at least one iteration")
+    counts = raw.astype(np.int64)
+    rng = np.random.default_rng(42) if rng is None else rng
     counts = counts[counts > 0]
     total_reads = counts.sum()
 
     if total_reads == 0:
         return np.zeros(len(depth_steps)), np.zeros(len(depth_steps))
-
-    # Construct the population array of reads
-    taxa_indices = np.arange(len(counts))
-    reads_population = np.repeat(taxa_indices, counts)
 
     means = []
     stds = []
@@ -119,8 +121,8 @@ def simulate_rarefaction(counts_series, depth_steps, n_iter):
         # Monte Carlo resampling
         iter_richness = []
         for _ in range(n_iter):
-            sampled = np.random.choice(reads_population, size=depth, replace=False)
-            iter_richness.append(len(np.unique(sampled)))
+            sampled_counts = rng.multivariate_hypergeometric(counts, depth)
+            iter_richness.append(np.count_nonzero(sampled_counts))
         
         means.append(np.mean(iter_richness))
         stds.append(np.std(iter_richness, ddof=1) if n_iter > 1 else 0.0)
@@ -131,24 +133,32 @@ def simulate_rarefaction(counts_series, depth_steps, n_iter):
 # Main Pipeline
 # ---------------------------------------------------------------------------
 def generate_rarefaction_curves(data_path, rank_level, target_depth, num_steps, n_iter,
-                                organism_name, output_base, fmt, no_table):
+                                organism_name, output_base, fmt, no_table, seed=42):
     
     print(f"[*] Generating empirical rarefaction curves (Global Mode) → {output_base}")
 
     # 1. Load Data
-    df = pd.read_excel(data_path, sheet_name=0)
+    df = read_frame(data_path)
     df_rank = df[df["Rank"].str.lower() == rank_level.lower()].copy()
     if df_rank.empty:
         raise ValueError(f"No data found for taxonomic level: {rank_level}")
 
     # Separate metadata columns from sample columns
     meta_cols = {"Rank", "TaxID", "original_header", "Name", "Scientific Name"}
-    sample_cols = [c for c in df_rank.columns if c not in meta_cols]
-    df_counts = df_rank[sample_cols].apply(pd.to_numeric, errors="coerce").fillna(0).astype(int)
+    df_counts = count_matrix(df_rank)
+    sample_cols = list(df_counts.columns)
+    if num_steps < 2 or n_iter < 1:
+        raise ValueError("At least two depths and one iteration are required")
+    if not np.equal(df_counts.to_numpy(), np.floor(df_counts.to_numpy())).all():
+        raise ValueError("Rarefaction input must contain integer counts")
+    rng = np.random.default_rng(seed)
 
     # 2. Extract total reads per sample
     reads_totals = df_counts.sum(axis=0)
-    min_total_reads = int(reads_totals.min())
+    positive_totals = reads_totals[reads_totals > 0]
+    if positive_totals.empty:
+        raise ValueError("No taxonomic detections: rarefaction cannot be computed")
+    min_total_reads = int(positive_totals.min())
     
     # Auto-detect target depth if not provided
     if target_depth is None:
@@ -156,6 +166,8 @@ def generate_rarefaction_curves(data_path, rank_level, target_depth, num_steps, 
         print(f"    [*] Auto-detected rarefaction depth (min reads): {target_depth}")
     else:
         target_depth = int(target_depth)
+        if target_depth < 1 or target_depth > min_total_reads:
+            raise ValueError("Comparison depth must be positive and attainable by every nonempty sample")
         print(f"    [*] User-supplied rarefaction depth: {target_depth}")
 
     # 3. Color Assignment (Strictly one unique color per sample)
@@ -166,6 +178,7 @@ def generate_rarefaction_curves(data_path, rank_level, target_depth, num_steps, 
     apply_theme_minimal(ax)
 
     summary_records = []
+    curve_records = []
     
     # 5. Process each sample individually
     print(f"    [*] Computing {n_iter} iterations per depth for {len(sample_cols)} sample(s)...")
@@ -176,20 +189,22 @@ def generate_rarefaction_curves(data_path, rank_level, target_depth, num_steps, 
         S_obs = int((df_counts[sample] > 0).sum())
 
         # Define evaluation depths: 
-        # High resolution (num_steps) to ensure the curve smoothly visually flattens (plateaus)
+        # Evaluate a regular grid of depths; a plateau must be judged from the data.
         base_steps = np.linspace(0, N, num=num_steps, dtype=int)
         
         # Include the target depth explicitly if it's within the range
         eval_depths = np.unique(np.sort(np.append(base_steps, [target_depth])))
         eval_depths = eval_depths[eval_depths <= N] 
         
-        # Ensure we always plot the absolute maximum to show the flattening effect completely
+        # Include full observed counts; this endpoint alone cannot prove adequate sampling.
         if N not in eval_depths:
             eval_depths = np.append(eval_depths, N)
             
-        means, stds = simulate_rarefaction(df_counts[sample], eval_depths, n_iter)
+        means, stds = simulate_rarefaction(df_counts[sample], eval_depths, n_iter, rng=rng)
+        curve_records.extend({"Sample": sample, "Depth": int(depth), "Mean_Richness": float(mean),
+                              "SD_Richness": float(sd)} for depth, mean, sd in zip(eval_depths, means, stds))
         
-        # Plot the main curve and the confidence band
+        # Plot mean richness and resampling standard deviation
         ax.plot(eval_depths, means, color=color, linewidth=1.5, alpha=0.85)
         ax.fill_between(eval_depths, means - stds, means + stds, color=color, alpha=0.15, edgecolor='none')
         
@@ -221,6 +236,12 @@ def generate_rarefaction_curves(data_path, rank_level, target_depth, num_steps, 
     export_figure(fig, output_base, fmt)
     plt.close(fig)
     print(f"    [✓] Rarefaction plot saved: {output_base}.{fmt}")
+    pd.DataFrame(curve_records).to_csv(f"{output_base}_curves.csv", index=False)
+    pd.DataFrame(summary_records).to_csv(f"{output_base}_summary.csv", index=False)
+    write_run_record(output_base, "rarefaction", inputs=[data_path], parameters={
+        "rank": rank_level, "comparison_depth": target_depth, "steps": num_steps,
+        "iterations": n_iter, "seed": seed, "band": "mean ± resampling standard deviation",
+        "unit": "classified units at the selected taxonomic rank; verify reads/fragments/contigs upstream"})
 
     # 8. Summary Table
     if not no_table:
@@ -241,9 +262,10 @@ if __name__ == "__main__":
     
     parser.add_argument("--depth", type=int,    default=None, help="Target rarefaction depth (default: min total reads).")
     
-    # Increased default steps to 50 to guarantee smooth curves that visibly flatten out
+    # Default grid resolution; flattening is assessed from the results.
     parser.add_argument("--steps", type=int,    default=50, help="Number of depth intervals to compute (default: 50).")
     parser.add_argument("--iter",  type=int,    default=10, help="Monte Carlo resampling iterations per depth (default: 10).")
+    parser.add_argument("--seed", type=int, default=42, help="Reproducible resampling seed.")
     
     parser.add_argument("-fmt",  "--format",    choices=["pdf", "png", "tiff"], default="pdf", help="Output format.")
     parser.add_argument("--no_table", action="store_true", help="Skip exporting summary table.")
@@ -268,4 +290,5 @@ if __name__ == "__main__":
         output_base   = output_base,
         fmt           = args.format.lower(),
         no_table      = args.no_table,
+        seed          = args.seed,
     )

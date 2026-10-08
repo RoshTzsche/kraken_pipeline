@@ -10,6 +10,8 @@ OUTPUT_DIR = "../results/final_tables/"
 
 # Ranks to extract
 TARGET_RANKS = {
+    'D': 'Domain',
+    'K': 'Kingdom',
     'P': 'Phylum',
     'C': 'Class',
     'O': 'Order',
