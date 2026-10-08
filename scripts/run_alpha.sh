@@ -1,4 +1,6 @@
 #!/bin/bash
+set -euo pipefail
+cd -- "$(dirname -- "$0")"
 
 INPUT_DIR="../results/final_tables"
 METADATA="../data/metadata.xlsx"
@@ -29,7 +31,7 @@ parallel --verbose --jobs 4 \
   python 06_generate_Violin_ANOVA.py \
     -d {1} \
     -m "$METADATA" \
-    -c Treatment \
+    -c Time \
     -id SampleID \
     -r {2} \
     -org '$(get_org_name "{1}")' \
@@ -43,3 +45,4 @@ parallel --verbose --jobs 4 \
 echo "============================================================"
 echo " ¡Procesamiento paralelo completado!                        "
 echo "============================================================"
+

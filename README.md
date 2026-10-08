@@ -16,9 +16,9 @@ This architecture is optimized for environments requiring independent databases 
 
 ### Downstream Analytics
 * **Automated Abundance Filtering:** Implements dynamic thresholding to filter low-abundance taxa, calculating relative abundances dynamically prior to visualization.
-* **Bivariate Gaussian Confidence Ellipses:** Automatically computes and visualizes 95% confidence ellipses for Principal Coordinate Analysis (PCoA) groups. For groups where the sample size is $n \ge 3$, the model assumes a bivariate normal distribution to define the spatial bounding of the variance.
-* **Continuous Data Binning:** When modeling continuous numerical variables (e.g., pH, ORP) for PCoA grouping, the pipeline automatically executes Quantile Binning. This partitions the gradient into quartiles, yielding four intervals of equal probability mass ($P(X) = 0.25$), ensuring valid geometric ellipse calculation.
-* **Parametric Variance Analysis:** Executes One-Way Analysis of Variance (ANOVA) across physicochemical metadata. The pipeline automatically computes the Tukey Honest Significant Difference (HSD) test, generating a Compact Letter Display (CLD) for statistical significance mapping on clinical-grade Violin plots.
+* **Descriptive Covariance Ellipses:** PCoA groups with at least three samples may show approximate 95% Gaussian spread ellipses. These describe point dispersion, not confidence intervals for group means.
+* **Explicit Experimental Groups:** Captivity times remain recorded categories (0d, 7d, 30d); no automatic quartile binning is applied. Unknown times are excluded from time-point inference and reported in sample audit tables.
+* **Parametric Variance Analysis:** Executes One-Way Analysis of Variance (ANOVA) across physicochemical metadata. The pipeline automatically computes the Tukey Honest Significant Difference (HSD) test, generating a Compact Letter Display (CLD) for statistical significance mapping on taxon abundance plots (exploratory, not a compositional differential-abundance method).
 
 ---
 
@@ -331,3 +331,32 @@ pip install -r requirements.txt
 ```
 
 **License:** MIT — Unrestricted for commercial and academic utilization.
+
+
+## Manuscript statistics revision
+
+See [docs/statistics_revision.md](docs/statistics_revision.md) for the corrected analysis,
+input requirements, exclusion rules, methods wording, and figures that must be regenerated.
+
+```bash
+python scripts/run_manuscript.py \
+  --data results/final_tables/taxonomic_classification_clean.xlsx \
+  --metadata data/metadata.xlsx \
+  --output results/manuscript_review
+```
+
+This generates rarefaction, domain and abundance bars when the corresponding ranks
+are available, alpha diversity boxplots with all specimens, Bray-Curtis PCoA,
+PERMANOVA/PERMDISP tables, and inputs for official LEfSe. Add `--run-lefse` only
+when the official SegataLab executables and their R dependencies are installed.
+Prepared inputs are not reported as executed LEfSe results. The older custom
+LEfSe score and correlation-derived cladogram have been removed.
+
+No ANCOM-BC or ALDEx2 analysis is claimed by these scripts. ANOVA/Tukey taxon
+screens remain exploratory. Unrestricted permutations and independent-sample
+tests require independently sampled specimens; repeated individuals or tank
+clustering require a design-aware analysis before manuscript inference.
+
+Regression checks: `python -m unittest discover -s tests -v`. Runtime package
+versions and input paths are saved alongside each analysis in `*_run.json`;
+`requirements.txt` specifies installation constraints, not historical versions.

@@ -3,6 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import os
+from analysis_support import count_matrix, metadata_groups, display_proportions, write_run_record, group_order, read_frame
 
 # ---------------------------------------------------------------------------
 # Unified color palette — identical across all pipeline scripts (05, 06, 07)
@@ -61,35 +62,39 @@ def generate_individual_microbiome_plot(data_path, rank_level='family', threshol
                                          fmt='pdf', sample_order=None, no_table=False):
     """
     Generates a stacked bar chart of the relative abundance per individual sample.
-    Margins and 'Others' category are removed. Scaled precisely to 100%.
+    Low-abundance taxa are combined as Other, preserving the full denominator.
     Includes global padding and enlarged, square legend handles.
     Optionally exports an abundance summary table (.xlsx).
     """
     # 1. Load and segment data by Taxonomic Level
-    df = pd.read_excel(data_path, sheet_name=0)
+    df = read_frame(data_path)
     df_rank = df[df['Rank'].str.lower() == rank_level.lower()].copy()
 
     if df_rank.empty:
         raise ValueError(f"No data found for the taxonomic level: {rank_level}")
 
-    df_rank.set_index('Scientific Name', inplace=True)
+    label_col = 'Name' if 'Name' in df_rank else 'Scientific Name'
+    df_rank.set_index(label_col, inplace=True)
 
     sample_cols = [col for col in df_rank.columns
                    if col not in ['Rank', 'TaxID', 'original_header']]
-    df_counts = df_rank[sample_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
+    df_counts = count_matrix(df_rank)
+    df_counts = df_counts.groupby(level=0).sum()
 
     # 2. Transformation to Relative Abundance
-    rel_abund = df_counts.div(df_counts.sum(axis=0), axis=1)
+    totals = df_counts.sum(axis=0)
+    rel_abund = df_counts.div(totals.replace(0, float('nan')), axis=1)
 
     # 3. Mean calculation and Threshold Filtering
     mean_rel_abund = rel_abund.mean(axis=1)
     keep_taxa = mean_rel_abund[mean_rel_abund >= threshold].index
 
-    df_kept = rel_abund.loc[keep_taxa]
-
-    # --- RE-NORMALIZATION STEP ---
-    df_kept_normalized = df_kept.div(df_kept.sum(axis=0), axis=1) * 100
+    df_kept_normalized = display_proportions(rel_abund, threshold)
     df_plot = df_kept_normalized.T
+    df_plot.to_csv(f"{output_base}_proportions.csv")
+    write_run_record(output_base, "relative_abundance_individual", inputs=[data_path], parameters={
+        "rank": rank_level, "threshold": threshold, "denominator": "all counts at the selected rank",
+        "low_abundance": "Other category; no renormalisation after filtering"})
 
     # --- CUSTOM INDEX REORDERING ---
     if sample_order:
@@ -100,7 +105,7 @@ def generate_individual_microbiome_plot(data_path, rank_level='family', threshol
     # 4. Figure Creation and Vector Rendering
     fig, ax = plt.subplots(figsize=(16, 12))
 
-    plot_colors = COLORS[:len(keep_taxa)]
+    plot_colors = [COLORS[i % len(COLORS)] for i in range(len(df_plot.columns))]
 
     df_plot.plot(kind='bar', stacked=True, ax=ax, width=0.85, color=plot_colors)
     ax.set_ylim(0, 100)
@@ -110,7 +115,7 @@ def generate_individual_microbiome_plot(data_path, rank_level='family', threshol
 
     ax.tick_params(axis='both', which='both', length=0)
 
-    plt.ylabel('{} Relative Abundance >{:g}%'.format(organism_name, threshold * 100),
+    plt.ylabel('{} Relative Abundance (%)'.format(organism_name),
                fontsize=12, fontweight='bold')
     plt.xlabel('Sample Identifier', fontsize=12, fontweight='bold')
     plt.xticks(rotation=45, ha='right', fontsize=9)
@@ -157,11 +162,11 @@ def generate_grouped_microbiome_plots(data_path, metadata_path, category_col,
                                        output_base='output', fmt='pdf',
                                        category_order=None, no_table=False):
     """
-    Groups absolute counts by a metadata category before calculating relative abundance.
+    Averages per-sample relative abundances within metadata groups.
     Includes an optional custom categorical order mapping.
     Optionally exports an abundance summary table (.xlsx).
     """
-    df = pd.read_excel(data_path, sheet_name=0)
+    df = read_frame(data_path)
 
     if metadata_path.lower().endswith('.csv'):
         meta_df = pd.read_csv(metadata_path)
@@ -174,36 +179,30 @@ def generate_grouped_microbiome_plots(data_path, metadata_path, category_col,
     if df_rank.empty:
         raise ValueError(f"No data found for the taxonomic level: {rank_level}")
 
-    sample_cols = [col for col in df_rank.columns
-                   if col not in ['Rank', 'TaxID', 'original_header', 'Name']]
-    df_rank[sample_cols] = df_rank[sample_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
-
-    df_counts    = df_rank.groupby('Name')[sample_cols].sum()
-    meta_df[sample_id_col] = meta_df[sample_id_col].astype(str).str.strip()
-    category_map = dict(zip(meta_df[sample_id_col], meta_df[category_col]))
-
-    df_counts.columns = [
-        str(col).rsplit('_', 1)[0].strip() if '_' in str(col) else str(col).strip()
-        for col in df_counts.columns
-    ]
-    cols_to_keep = [col for col in df_counts.columns if col in category_map]
-
-    if not cols_to_keep:
-        raise ValueError("CRITICAL ERROR: None of the Sample IDs in your data matched the metadata.")
-
-    df_counts        = df_counts[cols_to_keep]
-    df_counts_mapped = df_counts.rename(columns=category_map)
-
-    # --- Modern pandas equivalent of .groupby(columns, axis=1).sum() ---
-    df_grouped_counts = df_counts_mapped.T.groupby(df_counts_mapped.T.index).sum().T
-
-    rel_abund      = df_grouped_counts.div(df_grouped_counts.sum(axis=0), axis=1)
+    df_counts = count_matrix(df_rank)
+    label_col = 'Name' if 'Name' in df_rank else 'Scientific Name'
+    df_counts.index = df_rank[label_col].values
+    df_counts = df_counts.groupby(level=0).sum()
+    category_map, audit = metadata_groups(df_counts.columns, metadata_path, category_col, sample_id_col)
+    totals = df_counts.sum(axis=0)
+    empty = audit.Sample.isin(totals[totals.eq(0)].index)
+    audit.loc[empty, ['Included', 'Reason']] = [False, 'no_taxonomic_detections']
+    keep_samples = [s for s in df_counts if category_map[s] is not None and totals[s] > 0]
+    if not keep_samples:
+        raise ValueError("No nonempty samples with recorded metadata groups")
+    individual = df_counts[keep_samples].div(totals[keep_samples], axis=1)
+    rel_abund = individual.T.groupby([category_map[s] for s in keep_samples]).mean().T
+    rel_abund = rel_abund[group_order(rel_abund.columns)]
     mean_rel_abund = rel_abund.mean(axis=1)
     keep_taxa      = mean_rel_abund[mean_rel_abund >= threshold].index
 
-    df_kept            = rel_abund.loc[keep_taxa]
-    df_kept_normalized = df_kept.div(df_kept.sum(axis=0), axis=1) * 100
+    df_kept_normalized = display_proportions(rel_abund, threshold)
     df_plot            = df_kept_normalized.T
+    df_plot.to_csv(f"{output_base}_proportions.csv")
+    write_run_record(output_base, "relative_abundance_group_mean", inputs=[data_path, metadata_path],
+        parameters={"rank": rank_level, "threshold": threshold, "category": category_col,
+                    "aggregation": "arithmetic mean of per-sample proportions",
+                    "denominator": "all counts at the selected rank", "low_abundance": "Other category"}, audit=audit)
 
     # --- CUSTOM INDEX REORDERING ---
     if category_order:
@@ -212,7 +211,7 @@ def generate_grouped_microbiome_plots(data_path, metadata_path, category_col,
         df_plot     = df_plot.loc[valid_order + missing]
 
     fig, ax     = plt.subplots(figsize=(16, 12))
-    plot_colors = COLORS[:len(keep_taxa)]
+    plot_colors = [COLORS[i % len(COLORS)] for i in range(len(df_plot.columns))]
 
     df_plot.plot(kind='bar', stacked=True, ax=ax, width=0.5, color=plot_colors)
 
@@ -232,7 +231,7 @@ def generate_grouped_microbiome_plots(data_path, metadata_path, category_col,
     ax.tick_params(axis='x', which='both', length=8, color='black')
 
     plt.setp(ax.get_yticklabels(), fontweight='bold', fontsize=11)
-    plt.ylabel('{} relative abundance (>{:g}%)'.format(organism_name, threshold * 100),
+    plt.ylabel('{} relative abundance (%)'.format(organism_name),
                fontsize=17, fontweight='bold')
     plt.xlabel(f'{category_col}', fontsize=17, fontweight='bold')
     plt.xticks(rotation=0, ha='center', fontsize=14)
@@ -334,3 +333,4 @@ if __name__ == "__main__":
             sample_order  = args.order,
             no_table      = args.no_table,
         )
+

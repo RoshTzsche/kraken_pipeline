@@ -1,9 +1,5 @@
-```gitignore
-# Dependencies
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
 .Python
 venv/
 env/
@@ -19,16 +15,10 @@ ENV/
 *.env.*
 *.env~*
 *.env.local~
-
-# Build artifacts
 build/
 dist/
 *.egg-info/
-
-# Logs
 *.log
-
-# OS generated files
 .DS_Store
 .DS_Store?
 ._*
@@ -36,11 +26,10 @@ dist/
 .Trashes
 ehthumbs.db
 Thumbs.db
-
-# Editor files
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-```
+.venv-statistics/
+results/manuscript_review/

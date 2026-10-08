@@ -9,6 +9,9 @@ from scipy.spatial.distance import pdist, squareform
 from matplotlib.patches import Ellipse
 import matplotlib.transforms as transforms
 import scipy.stats as stats
+from statsmodels.stats.multitest import multipletests
+from analysis_support import (count_matrix, metadata_groups, group_order, read_frame,
+                              write_run_record, pcoa_lingoes, dispersion_test)
 
 # ---------------------------------------------------------------------------
 # Unified color palette — identical across all pipeline scripts (04, 06, 07)
@@ -75,130 +78,41 @@ def export_summary_table(df, output_base, sheet_name='Summary', extra_sheets=Non
 
 
 def compute_anosim(dist_matrix, groups, n_perm=999, seed=42):
-    """
-    Analysis of Similarities (ANOSIM) — Clarke 1993.
-    R = (r̄_B − r̄_W) / (N(N−1)/4)
-      where r̄_B = mean rank of between-group distances,
-            r̄_W = mean rank of within-group distances.
-    Permutation-based p-value (n_perm label shuffles).
-    Returns: (R_statistic, p_value)
-    """
-    np.random.seed(seed)
-    n          = len(groups)
-    groups_arr = np.array(groups)
-
-    if len(np.unique(groups_arr)) < 2:
-        print("    [!] ANOSIM: fewer than 2 unique groups — statistic cannot be computed.")
+    from skbio import DistanceMatrix
+    from skbio.stats.distance import anosim
+    if len(set(groups)) < 2 or min(pd.Series(groups).value_counts()) < 2:
         return np.nan, np.nan
-
-    # Rank all condensed upper-triangle distances, then rebuild square rank matrix
-    dist_flat     = squareform(dist_matrix, checks=False)
-    ranked_flat   = stats.rankdata(dist_flat)
-    rank_matrix   = squareform(ranked_flat, checks=False)
-    triu_idx      = np.triu_indices(n, k=1)
-
-    def _r(grps):
-        same_mask = (grps[:, None] == grps[None, :])[triu_idx]
-        r_triu    = rank_matrix[triu_idx]
-        r_W = np.mean(r_triu[same_mask])   if same_mask.any()  else 0.0
-        r_B = np.mean(r_triu[~same_mask])  if (~same_mask).any() else 0.0
-        return (r_B - r_W) / (n * (n - 1) / 4)
-
-    obs_r  = _r(groups_arr)
-    perm_r = np.array([_r(np.random.permutation(groups_arr)) for _ in range(n_perm)])
-    p_val  = (np.sum(perm_r >= obs_r) + 1) / (n_perm + 1)
-
-    print(f"    [*] ANOSIM     R = {obs_r:.4f}   p = {p_val:.4f}   (n_perm = {n_perm})")
-    return float(obs_r), float(p_val)
+    result = anosim(DistanceMatrix(dist_matrix), list(groups), permutations=n_perm, seed=seed)
+    return float(result['test statistic']), float(result['p-value'])
 
 
 def compute_permanova(dist_matrix, groups, n_perm=999, seed=42):
-    """
-    Permutational MANOVA (PERMANOVA / adonis) — Anderson 2001.
-    Pseudo-F = (SS_A / df_A) / (SS_W / df_W)
-      where SS is computed on squared Bray-Curtis distances,
-            df_A = a − 1  (between-group df),
-            df_W = N − a  (within-group  df).
-    Permutation-based p-value (n_perm label shuffles).
-    Returns: (F_statistic, R2, p_value)
-    """
-    np.random.seed(seed)
-    n           = len(groups)
-    groups_arr  = np.array(groups)
-    a           = len(np.unique(groups_arr))
-
-    if a < 2 or n <= a:
-        print("    [!] PERMANOVA: insufficient groups or samples — statistic cannot be computed.")
+    from skbio import DistanceMatrix
+    from skbio.stats.distance import permanova
+    if len(set(groups)) < 2 or min(pd.Series(groups).value_counts()) < 2:
         return np.nan, np.nan, np.nan
-
-    D    = dist_matrix ** 2       # squared distance matrix
-    df_a = a - 1
-    df_w = n - a
-
-    def _pseudo_f(grps):
-        ss_t = np.sum(D) / (2 * n)
-        ss_w = 0.0
-        for g in np.unique(grps):
-            idx = np.where(grps == g)[0]
-            n_g = len(idx)
-            if n_g > 1:
-                ss_w += np.sum(D[np.ix_(idx, idx)]) / (2 * n_g)
-        ss_a = ss_t - ss_w
-        if df_w <= 0 or ss_w == 0:
-            return np.nan, np.nan
-        return (ss_a / df_a) / (ss_w / df_w), ss_a / ss_t
-
-    obs_f, obs_r2 = _pseudo_f(groups_arr)
-    if np.isnan(obs_f):
-        return np.nan, np.nan, np.nan
-
-    perm_fs = []
-    for _ in range(n_perm):
-        pf, _ = _pseudo_f(np.random.permutation(groups_arr))
-        if not np.isnan(pf):
-            perm_fs.append(pf)
-
-    p_val = (np.sum(np.array(perm_fs) >= obs_f) + 1) / (n_perm + 1) if perm_fs else np.nan
-
-    print(f"    [*] PERMANOVA  F = {obs_f:.4f}   R² = {obs_r2:.4f}   p = {p_val:.4f}   (n_perm = {n_perm})")
-    return float(obs_f), float(obs_r2), float(p_val)
+    result = permanova(DistanceMatrix(dist_matrix), list(groups), permutations=n_perm, seed=seed)
+    f = float(result['test statistic'])
+    k, n = len(set(groups)), len(groups)
+    r2 = f * (k - 1) / (f * (k - 1) + n - k) if np.isfinite(f) else (1.0 if np.isinf(f) else np.nan)
+    return f, r2, float(result['p-value'])
 
 
 def compute_pairwise_anosim(dist_matrix, groups, n_perm=999, seed=42):
-    """
-    Pairwise ANOSIM between every unique group pair.
-    Returns a DataFrame with columns: Comparison | R | p | Interpretation
-    """
-    unique_groups = sorted(set(groups))
-    groups_arr    = np.array(groups)
-    rows          = []
-
-    for i in range(len(unique_groups)):
-        for j in range(i + 1, len(unique_groups)):
-            g1, g2   = unique_groups[i], unique_groups[j]
-            mask     = (groups_arr == g1) | (groups_arr == g2)
-            idx      = np.where(mask)[0]
-            sub_dist = dist_matrix[np.ix_(idx, idx)]
-            sub_grps = groups_arr[mask]
-            r, p     = compute_anosim(sub_dist, sub_grps, n_perm=n_perm, seed=seed)
-
-            if not np.isnan(r):
-                if   r < 0.1: interp = "Negligible separation"
-                elif r < 0.25: interp = "Low separation"
-                elif r < 0.5:  interp = "Moderate separation"
-                else:           interp = "Strong separation"
-            else:
-                interp = "N/A"
-
-            rows.append({
-                'Comparison':     f"{g1} vs {g2}",
-                'R':              round(r, 4) if not np.isnan(r) else "N/A",
-                'p':              round(p, 4) if not np.isnan(p) else "N/A",
-                'Significant':    "Yes" if (not np.isnan(p) and p < 0.05) else "No",
-                'Interpretation': interp,
-            })
-
-    return pd.DataFrame(rows)
+    from itertools import combinations
+    groups = np.asarray(groups)
+    rows = []
+    for a, b in combinations(group_order(groups), 2):
+        idx = np.flatnonzero((groups == a) | (groups == b))
+        r, p = compute_anosim(dist_matrix[np.ix_(idx, idx)], groups[idx], n_perm, seed)
+        rows.append({'Group1': a, 'Group2': b, 'R': r, 'p_value': p})
+    frame = pd.DataFrame(rows, columns=['Group1', 'Group2', 'R', 'p_value'])
+    frame['p_adjusted'] = np.nan
+    finite = frame.p_value.notna()
+    if finite.any():
+        frame.loc[finite, 'p_adjusted'] = multipletests(frame.loc[finite, 'p_value'], method='fdr_bh')[1]
+    frame['Adjustment'] = 'BH across pairwise ANOSIM comparisons'
+    return frame
 
 
 def autopct_generator(pct):
@@ -226,9 +140,9 @@ def generate_global_pie_chart(df_rank, rank_level, threshold, output_base, fmt,
     else:
         print("    [!] No label column found — using row index as label.")
 
-    df_counts   = df_work[sample_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
+    df_counts = count_matrix(df_work).groupby(level=0).sum()
 
-    rel_abund      = df_counts.div(df_counts.sum(axis=0), axis=1)
+    rel_abund      = df_counts.div(df_counts.sum(axis=0).replace(0, np.nan), axis=1)
     mean_rel_abund = rel_abund.mean(axis=1)
 
     high_abund = mean_rel_abund[mean_rel_abund >= threshold]
@@ -337,14 +251,16 @@ def generate_global_pie_chart(df_rank, rank_level, threshold, output_base, fmt,
 
 def confidence_ellipse(x, y, ax, n_std=2.447, facecolor='none', **kwargs):
     """
-    Mathematical Implementation of the Covariance Confidence Ellipse.
-    n_std = 2.447 represents ~95% confidence for a 2D distribution.
+    Approximate 95% Gaussian covariance ellipse for the distribution of points.
+    It is a descriptive spread ellipse, not a confidence region for the mean.
     """
     if x.size < 3:
         return
 
     cov     = np.cov(x, y)
-    pearson = cov[0, 1] / np.sqrt(cov[0, 0] * cov[1, 1])
+    if not np.isfinite(cov).all() or cov[0, 0] <= 0 or cov[1, 1] <= 0:
+        return
+    pearson = np.clip(cov[0, 1] / np.sqrt(cov[0, 0] * cov[1, 1]), -1, 1)
 
     ell_radius_x = np.sqrt(1 + pearson)
     ell_radius_y = np.sqrt(1 - pearson)
@@ -367,208 +283,88 @@ def confidence_ellipse(x, y, ax, n_std=2.447, facecolor='none', **kwargs):
 
 
 def generate_pcoa_plot(df_rank, rank_level, metadata_path, category_col, sample_id_col,
-                        output_base, fmt, unknown_mode='drop_all', no_table=False):
-    """
-    Phase 2: Generates the Principal Coordinate Analysis (PCoA) via Spectral Decomposition.
-    Computes ANOSIM (Clarke 1993) and PERMANOVA (Anderson 2001) with 999 permutations
-    and renders both R/F statistics + p-values in an annotation box (upper-left corner).
-
-    unknown_mode controls how samples absent from metadata are handled:
-      'drop_all'  — exclude from distance matrix AND plot (cleanest ordination)
-      'drop_plot' — keep in distance matrix math, but omit from the final plot
-      'keep'      — include in plot as an explicit 'Unknown' group
-    """
-    print(f"[*] Solving spectral decomposition for PCoA -> {output_base}")
-    print(f"    [*] Unknown sample mode: '{unknown_mode}'")
-
-    sample_cols = [col for col in df_rank.columns
-                   if col not in ['Rank', 'TaxID', 'original_header', 'Name', 'Scientific Name']]
-    df_counts = df_rank[sample_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
-
-    rel_abund    = df_counts.div(df_counts.sum(axis=0), axis=1).T
-    sample_names = rel_abund.index.tolist()
-
-    # --- Resolve metadata groups before touching the matrix ---
-    groups = ["All Samples"] * len(sample_names)
-    if metadata_path and category_col:
-        meta_df = (pd.read_csv(metadata_path) if metadata_path.endswith('.csv')
-                   else pd.read_excel(metadata_path))
-
-        if pd.api.types.is_numeric_dtype(meta_df[category_col]):
-            print(f"    [*] Continuous numerical variable detected for '{category_col}'.")
-            print(f"    [*] Applying Quantile Binning (q=4) to ensure sufficient group sizes.")
-            try:
-                bins = pd.qcut(meta_df[category_col].dropna(), q=4)
-                meta_df[category_col] = bins.astype(str)
-            except ValueError:
-                bins = pd.cut(meta_df[category_col].dropna(), bins=4)
-                meta_df[category_col] = bins.astype(str)
-
-        meta_df[sample_id_col] = meta_df[sample_id_col].astype(str).str.strip().str.lower()
-        meta_map = dict(zip(meta_df[sample_id_col], meta_df[category_col].astype(str)))
-        meta_keys = list(meta_map.keys())
-
-        groups = []
-        for name in sample_names:
-            clean_name = name.split('_')[0].strip().lower()
-            mapped_val = meta_map.get(clean_name, "Unknown")
-
-            # Fallback: longest metadata key that is a prefix of clean_name
-            if mapped_val in ("Unknown", "nan"):
-                candidates = [k for k in meta_keys if clean_name.startswith(k)]
-                if candidates:
-                    best_key   = max(candidates, key=len)
-                    mapped_val = meta_map[best_key]
-                    print(f"    [~] Prefix match: '{name}' → '{best_key}' (group: {mapped_val})")
-
-            if mapped_val == 'nan':
-                mapped_val = "Unknown"
-            if mapped_val == "Unknown":
-                print(f"    [!] Topological Mismatch: '{name}' (cleaned: '{clean_name}') NOT FOUND in metadata.")
-            groups.append(mapped_val)
-
-    # --- Apply unknown_mode: drop_all removes samples before matrix computation ---
-    if unknown_mode == 'drop_all':
-        keep_mask = [g != 'Unknown' for g in groups]
-        n_dropped = keep_mask.count(False)
-        if n_dropped > 0:
-            dropped = [sample_names[i] for i, k in enumerate(keep_mask) if not k]
-            print(f"    [!] drop_all: removing {n_dropped} unmatched sample(s): {dropped}")
-        rel_abund    = rel_abund.iloc[[i for i, k in enumerate(keep_mask) if k]]
-        sample_names = [s for s, k in zip(sample_names, keep_mask) if k]
-        groups       = [g for g, k in zip(groups,       keep_mask) if k]
-        if rel_abund.empty:
-            print("    [!] No matched samples remaining after drop_all. Aborting PCoA plot.")
-            return
-
-    # Non-Euclidean Bray-Curtis metric calculation
-    dist_array  = pdist(rel_abund.values, metric='braycurtis')
-    dist_matrix = squareform(dist_array)
-
-    # Torgerson-Gower scaling
-    n = dist_matrix.shape[0]
-    J = np.eye(n) - np.ones((n, n)) / n
-    B = -0.5 * J.dot(dist_matrix ** 2).dot(J)
-
-    # Eigendecomposition
-    eigenvalues, eigenvectors = np.linalg.eigh(B)
-    idx          = np.argsort(eigenvalues)[::-1]
-    eigenvalues  = eigenvalues[idx]
-    eigenvectors = eigenvectors[:, idx]
-    eigenvalues[eigenvalues < 0] = 0
-
-    coords              = eigenvectors[:, :2] * np.sqrt(eigenvalues[:2])
-    variance_explained  = (eigenvalues / np.sum(eigenvalues)) * 100
-    pco1_var, pco2_var  = variance_explained[0], variance_explained[1]  # PCo1/PCo2 variance
-
-    df_pcoa = pd.DataFrame({
-        'PCo1': coords[:, 0], 'PCo2': coords[:, 1],  # Renamed from PC1/PC2 to PCo1/PCo2
-        'Group': groups, 'Sample': sample_names
-    })
-
-    # --- Apply unknown_mode: drop_plot removes from visualization only ---
-    if unknown_mode == 'drop_plot':
-        unknown_mask = df_pcoa['Group'] == 'Unknown'
-        n_dropped    = unknown_mask.sum()
-        if n_dropped > 0:
-            dropped = df_pcoa.loc[unknown_mask, 'Sample'].tolist()
-            print(f"    [!] drop_plot: {n_dropped} sample(s) kept in matrix, hidden from plot: {dropped}")
-        df_pcoa = df_pcoa[~unknown_mask].reset_index(drop=True)
-        if df_pcoa.empty:
-            print("    [!] No matched samples remaining after drop_plot. Aborting PCoA plot.")
-            return
-
-    # --- 'keep' mode: unknowns pass through as-is and are plotted as 'Unknown' group ---
-
-    # --- Statistical Analysis: ANOSIM + PERMANOVA ---
-    _stats_samples  = df_pcoa['Sample'].tolist()
-    _stats_groups   = df_pcoa['Group'].tolist()
-    _sample_to_idx  = {s: i for i, s in enumerate(sample_names)}
-    _pcoa_idx       = [_sample_to_idx[s] for s in _stats_samples if s in _sample_to_idx]
-    _dist_stats     = dist_matrix[np.ix_(_pcoa_idx, _pcoa_idx)]
-
-    anosim_r_val, anosim_p_val             = compute_anosim(_dist_stats, _stats_groups)
-    perm_f_val,   perm_r2_val, perm_p_val  = compute_permanova(_dist_stats, _stats_groups)
-
-    # --- Plot ---
-    unique_groups = df_pcoa['Group'].unique()
-
-    fig, ax = plt.subplots(figsize=(11, 8), facecolor='#f8f9fa')
-    ax.set_facecolor('#f4f4f6')
-    ax.grid(color='white', linestyle='-', linewidth=1.5, alpha=0.8)
-
-    for i, group in enumerate(unique_groups):
-        subset = df_pcoa[df_pcoa['Group'] == group]
-        color  = COLORS[i % len(COLORS)]
-
-        ax.scatter(subset['PCo1'], subset['PCo2'],
-                   s=180, alpha=0.9, label=group,
-                   color=color, edgecolors='white', linewidth=2, zorder=3)
-
-        if len(subset) >= 3 and group != "Unknown":
-            confidence_ellipse(subset['PCo1'].values, subset['PCo2'].values, ax,
-                               n_std=2.447, edgecolor=color, facecolor=color,
-                               alpha=0.15, linewidth=2, zorder=2)
-            confidence_ellipse(subset['PCo1'].values, subset['PCo2'].values, ax,
-                               n_std=2.447, edgecolor=color, facecolor='none',
-                               linestyle='--', alpha=0.8, linewidth=1.5, zorder=2)
-
-    ax.axhline(0, color='black', linestyle=':', linewidth=1.2, alpha=0.6, zorder=1)
-    ax.axvline(0, color='black', linestyle=':', linewidth=1.2, alpha=0.6, zorder=1)
-
-    # Corrected axis labels: PCo1 / PCo2 (Principal Coordinates, not Principal Components)
-    ax.set_xlabel(f"PCo1 ({pco1_var:.1f}%)", fontsize=14, fontweight='bold', color='#333333')
-    ax.set_ylabel(f"PCo2 ({pco2_var:.1f}%)", fontsize=14, fontweight='bold', color='#333333')
-
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-
-    leg = ax.legend(title=category_col if category_col else "Group",
-                    fontsize=12, title_fontproperties={'weight': 'bold', 'size': 13},
-                    bbox_to_anchor=(1.03, 0.5), loc='center left', frameon=True,
-                    facecolor='white', edgecolor='white', shadow=False)
-    leg.get_title().set_color('#333333')
-
-    # --- ANOSIM + PERMANOVA annotation box (upper-left corner) ---
-    def _fmt(v, d=3):
-        return f"{v:.{d}f}" if (v is not None and not np.isnan(v)) else "N/A"
-
-    stats_text = (
-        f"ANOSIM  R = {_fmt(anosim_r_val)}   |   "
-        f"PERMANOVA  F = {_fmt(perm_f_val, 2)}   p = {_fmt(perm_p_val)}"
-    )
-    ax.text(0.03, 0.97, stats_text,
-            transform=ax.transAxes, ha='left', va='top',
-            fontsize=10, fontfamily='monospace',
-            bbox=dict(boxstyle='round,pad=0.5', facecolor='white',
-                      edgecolor='#CCCCCC', alpha=0.92, linewidth=1.2),
-            zorder=10)
-
-    plt.tight_layout()
-    export_topological_projection(fig, output_base, fmt, pad_inches=0.5)
+                       output_base, fmt, unknown_mode='drop_all', no_table=False,
+                       permutations=999, seed=42, data_path=None):
+    """Bray-Curtis inference and Lingoes-corrected PCoA; unmatched groups never tested."""
+    if permutations < 1:
+        raise ValueError('At least one permutation is required')
+    counts = count_matrix(df_rank)
+    mapping, audit = metadata_groups(counts.columns, metadata_path, category_col, sample_id_col)
+    totals = counts.sum(axis=0)
+    empty = audit.Sample.isin(totals[totals.eq(0)].index)
+    audit.loc[empty, ['Included', 'Reason']] = [False, 'no_taxonomic_detections']
+    samples = [s for s in counts if totals[s] > 0 and (unknown_mode != 'drop_all' or mapping[s] is not None)]
+    if len(samples) < 3:
+        raise ValueError('PCoA needs at least three nonempty samples after metadata filtering')
+    relative = counts[samples].div(totals[samples], axis=1).T
+    distances = squareform(pdist(relative.to_numpy(), metric='braycurtis'))
+    coords, explained, _, diagnostic = pcoa_lingoes(distances)
+    coordinates = pd.DataFrame({'Sample': samples, 'Group': [mapping[s] or 'Unknown' for s in samples],
+                                'PCo1': coords[:, 0], 'PCo2': coords[:, 1]})
+    known = [i for i, sample in enumerate(samples) if mapping[sample] is not None]
+    test_samples = [samples[i] for i in known]
+    groups = [mapping[s] for s in test_samples]
+    test_distances = distances[np.ix_(known, known)]
+    valid = len(set(groups)) >= 2 and min(pd.Series(groups).value_counts()) >= 2
+    if valid and np.any(test_distances):
+        ar, ap = compute_anosim(test_distances, groups, permutations, seed)
+        f, r2, pp = compute_permanova(test_distances, groups, permutations, seed)
+        dispersion = dispersion_test(test_distances, test_samples, groups, permutations, seed)
+        status = 'computed'
+    else:
+        ar = ap = f = r2 = pp = np.nan
+        status = 'insufficient_replication' if not valid else 'all_distances_zero'
+        dispersion = {'Test': 'PERMDISP', 'Statistic': np.nan, 'p_value': np.nan,
+                      'Center': 'spatial median', 'Distance': 'Lingoes-corrected Bray-Curtis'}
+    global_tests = pd.DataFrame([
+        {'Test': 'PERMANOVA', 'Statistic': f, 'R_squared': r2, 'p_value': pp, 'Distance': 'Bray-Curtis'},
+        {'Test': 'ANOSIM (secondary)', 'Statistic': ar, 'p_value': ap, 'Distance': 'Bray-Curtis'},
+        dispersion,
+    ])
+    global_tests['Status'] = status
+    global_tests['Permutations'] = permutations
+    global_tests['Seed'] = seed
+    global_tests['N_samples'] = len(groups)
+    global_tests['N_groups'] = len(set(groups))
+    pairwise = compute_pairwise_anosim(test_distances, groups, permutations, seed) if valid and np.any(test_distances) else pd.DataFrame()
+    distance_frame = pd.DataFrame(distances, index=samples, columns=samples)
+    coordinates.to_csv(f'{output_base}_coordinates.csv', index=False)
+    distance_frame.to_csv(f'{output_base}_distances.csv', index_label='Sample')
+    global_tests.to_csv(f'{output_base}_global_tests.csv', index=False)
+    pairwise.to_csv(f'{output_base}_pairwise_ANOSIM.csv', index=False)
+    write_run_record(output_base, 'beta_diversity', inputs=[data_path, metadata_path], audit=audit,
+        parameters={'rank': rank_level, 'category': category_col, 'permutations': permutations,
+                    'seed': seed, 'permutations_scheme': 'unrestricted; independent specimens required',
+                    'distance': 'Bray-Curtis on per-sample proportions', 'ordination': 'PCoA with Lingoes correction',
+                    'dispersion_center': 'spatial median', 'unknown_mode': unknown_mode,
+                    'unknown_inference': 'always excluded', **diagnostic})
+    plot_data = coordinates if unknown_mode == 'keep' else coordinates[coordinates.Group.ne('Unknown')]
+    fig, ax = plt.subplots(figsize=(10, 7), facecolor='white')
+    for i, group in enumerate(group_order(plot_data.Group)):
+        subset = plot_data[plot_data.Group.eq(group)]
+        color = COLORS[i % len(COLORS)]
+        ax.scatter(subset.PCo1, subset.PCo2, s=70, label=f'{group} (n={len(subset)})',
+                   color=color, edgecolors='black', linewidths=0.5, zorder=3)
+        if len(subset) >= 3 and group != 'Unknown':
+            confidence_ellipse(subset.PCo1.to_numpy(), subset.PCo2.to_numpy(), ax,
+                               edgecolor=color, facecolor=color, alpha=0.12)
+    ax.axhline(0, color='grey', linewidth=0.5)
+    ax.axvline(0, color='grey', linewidth=0.5)
+    ax.set_xlabel(f'PCo1 ({explained[0]:.1f}%)')
+    ax.set_ylabel(f'PCo2 ({explained[1]:.1f}%)')
+    ax.legend(title=category_col, bbox_to_anchor=(1.02, 1), loc='upper left', frameon=False)
+    ax.set_title(f'{rank_level.capitalize()} Bray-Curtis PCoA')
+    if status == 'computed':
+        ax.text(0.02, 0.98, f'PERMANOVA: R²={r2:.3f}, p={pp:.3g}\nPERMDISP: p={dispersion["p_value"]:.3g}',
+                transform=ax.transAxes, va='top', fontsize=9)
+    fig.tight_layout()
+    export_topological_projection(fig, output_base, fmt)
     plt.close(fig)
-
-    # PCoA summary table — Sheet 1: coordinates + groups; Sheet 2: Bray-Curtis matrix; Sheet 3: Pairwise ANOSIM
     if not no_table:
-        coords_df = df_pcoa[['Sample', 'Group', 'PCo1', 'PCo2']].round(6).reset_index(drop=True)
-
-        dist_df = pd.DataFrame(
-            _dist_stats,
-            index=_stats_samples,
-            columns=_stats_samples
-        ).round(6)
-        dist_df.insert(0, 'Sample', _stats_samples)
-
-        pairwise_df = compute_pairwise_anosim(_dist_stats, _stats_groups)
-
-        export_summary_table(
-            coords_df, output_base,
-            sheet_name='PCoA_Coordinates',
-            extra_sheets={
-                'BrayCurtis_Distance': dist_df,
-                'Pairwise_ANOSIM':     pairwise_df,
-            }
-        )
+        export_summary_table(coordinates, output_base, 'PCoA_Coordinates', {
+            'BrayCurtis_Distance': distance_frame.reset_index(names='Sample'),
+            'Global_Tests': global_tests, 'Pairwise_ANOSIM': pairwise})
+    return coordinates, global_tests
 
 
 if __name__ == "__main__":
@@ -608,6 +404,8 @@ if __name__ == "__main__":
     parser.add_argument('--no_table', action='store_true',
                         help='Skip exporting summary tables (.xlsx).')
 
+    parser.add_argument("--permutations", type=int, default=999)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -619,7 +417,7 @@ if __name__ == "__main__":
     output_base   = os.path.join(OUTPUT_DIR, base_name)
 
     # Data extraction phase
-    df      = pd.read_excel(args.data, sheet_name=0)
+    df      = read_frame(args.data)
     df_rank = df[df['Rank'].str.lower() == args.rank.lower()].copy()
     if df_rank.empty:
         raise ValueError(f"CRITICAL FAULT: No data found for the taxonomic level: {args.rank}")
@@ -639,7 +437,8 @@ if __name__ == "__main__":
                 df_rank, args.rank, args.metadata, args.category, args.sample_id,
                 f"{output_base}_PCoA", args.format.lower(),
                 unknown_mode=args.unknown,
-                no_table=args.no_table
+                no_table=args.no_table, permutations=args.permutations, seed=args.seed, data_path=args.data
             )
         else:
             print("[!] WARNING: PCoA requires valid metadata and categorical vectors. Aborting sub-routine.")
+

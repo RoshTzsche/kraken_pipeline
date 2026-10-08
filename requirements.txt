@@ -13,7 +13,7 @@ seaborn>=0.12.0
 statsmodels>=0.14.0
 scipy>=1.10.0
 
-# Machine Learning for LEfSe analysis (08_generate_lefse.py)
+# Compatibility with other analysis scripts; official LEfSe is installed separately.
 scikit-learn>=1.0.0
 
 # Progress bars for long-running scripts (08_generate_lefse.py, etc.)
@@ -21,3 +21,7 @@ tqdm>=4.65.0
 
 # Rarefaction curve analysis (07_rarefaction_curve.py)
 numpy>=1.24.0
+
+# Validated multivariate dispersion test (PCoA script)
+scikit-bio>=0.7.0
+
